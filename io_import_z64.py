@@ -8,10 +8,9 @@ bl_info = {
    "wiki_url":		"https://code.google.com/p/sods-blender-plugins/",
    "tracker_url":	"https://code.google.com/p/sods-blender-plugins/",
    "support":		'COMMUNITY',
-   "category":		"Import-Export",
-   
-   "Anim stuff": "RodLima http://www.facebook.com/rod.lima.96?ref=tn_tnmn"
-   }
+   "category":		"Import-Export"}
+
+"""Anim stuff: RodLima http://www.facebook.com/rod.lima.96?ref=tn_tnmn"""
 
 import bpy, os, struct, time
 import mathutils
@@ -57,6 +56,9 @@ def powof(val):
 def mulVec(v1, v2):
    return Vector([v1.x * v2.x, v1.y * v2.y, v1.z * v2.z])
 
+def mulVec2(v1, v2):
+   return Vector([v1.x * v2.x, v1.y * v2.y, v1.z * v2.z, v1[3] * v2[3]])
+
 
 class Tile:
    def __init__(self):
@@ -82,13 +84,25 @@ class Tile:
             os.mkdir(fpath + "/textures")
          except:
             pass
+        #Noka here
+         extrastring = ""
          w = self.rWidth
-         if int(self.clip.x) & 1 != 0 and enableTexMirror:
-            w <<= 1
+         if int(self.clip.x) & 1 != 0:
+            if enableTexMirror:
+                w <<= 1
+            else:
+                extrastring += "#MirrorX"
          h = self.rHeight
-         if int(self.clip.y) & 1 != 0 and enableTexMirror:
-            h <<= 1
-         file = open(fpath + "/textures/%08X.tga" % self.data, 'wb')
+         if int(self.clip.y) & 1 != 0:
+            if enableTexMirror:
+                h <<= 1
+            else:
+                extrastring += "#MirrorY"
+         if int(self.clip.x) & 2 != 0 and enableTexClamp == False:
+            extrastring += "#ClampX"
+         if int(self.clip.y) & 2 != 0 and enableTexClamp == False:
+            extrastring += "#ClampY"
+         file = open(fpath + ("/textures/%08X" % self.data) + str(extrastring) + ".tga", 'wb')
          if self.texFmt == 0x40 or self.texFmt == 0x48 or self.texFmt == 0x50:
             file.write(pack("<BBBHHBHHHHBB", 0, 1, 1, 0, 256, 24, 0, 0, w, h, 8, 0))
             self.writePalette(file, segment)
@@ -101,7 +115,7 @@ class Tile:
          file.close()
       try:
          tex = bpy.data.textures.new(name="tex_%08X" % self.data, type='IMAGE')
-         img = load_image(fpath + "/textures/%08X.tga" % self.data)
+         img = load_image(fpath + ("/textures/%08X" % self.data) + str(extrastring) + ".tga")
          if img:
             tex.image = img
             if int(self.clip.x) & 2 != 0 and enableTexClamp:
@@ -368,6 +382,10 @@ class Vertex:
       self.color[0] = min(0.00392157 * segment[seg][offset + 12], 1.0)
       self.color[1] = min(0.00392157 * segment[seg][offset + 13], 1.0)
       self.color[2] = min(0.00392157 * segment[seg][offset + 14], 1.0)
+      if bpy.app.version >= (2, 79, 0):
+      	self.color[3] = min(0.00392157 * segment[seg][offset + 15], 1.0)
+
+
 
 
 class Mesh:
@@ -390,6 +408,7 @@ class Mesh:
       vcd = me.tessface_vertex_colors.new().data
       for i in range(len(self.faces)):
          me.tessfaces[i].vertices = self.faces[i]
+
          vcd[i].color1 = self.colors[i * 3 + 2]
          vcd[i].color2 = self.colors[i * 3 + 1]
          vcd[i].color3 = self.colors[i * 3]
@@ -415,10 +434,11 @@ class Mesh:
          mod.object = hierarchy.armature
          mod.use_bone_envelopes = False
          mod.use_vertex_groups = True
-         
-      ob.animation_data_create()
-      action = bpy.data.actions.new(hierarchy.name)
-      ob.animation_data.action = action
+      
+      if hierarchy is not None:
+         ob.animation_data_create()
+         action = bpy.data.actions.new(hierarchy.name)
+         ob.animation_data.action = action
       #print("Action", action)
 
 
@@ -536,6 +556,7 @@ class F3DZEX:
       self.animTotal = 0
       self.TimeLine = 0
       self.TimeLinePosition = 0
+      self.displaylists = []
        
       for i in range(16):
          self.segment.extend([[]])
@@ -548,7 +569,17 @@ class F3DZEX:
       self.curTile = 0
       self.material = []
       self.hierarchy = []
-      self.resetCombiner()      
+      self.resetCombiner()   
+
+   def loaddisplaylists(self, path):
+      try:
+          file = open(path, 'rb')
+          self.displaylists = file.readlines()
+          file.close()
+          print("Loaded the display list list successfully!")
+      except:
+          print("Did not find displaylists.txt!")
+          pass      
 
    def setSegment(self, seg, path):      
       try:
@@ -658,18 +689,26 @@ class F3DZEX:
                seg = data[mho+4]
                start = (data[mho+5] << 16) | (data[mho+6] << 8) | data[mho+7]
                end = (data[mho+9] << 16) | (data[mho+10] << 8) | data[mho+11]
+               print("         Mesh Type: %02X" % type)
                if (data[mho+4] == 0x03 and start < end and end < len(data)):
+                  print("         start %08X" % start)
+                  print("         end %08X" % end)
                   if (type == 0):
                      for j in range(start, end, 4):
-                        self.buildDisplayList(None, [None], unpack_from(">L", data, j)[0])
+                        self.buildDisplayList(None, [None], unpack_from(">L", data, j)[0], False)
+                  elif (type == 1 and count == 1):
+                     #Noka here
+                     end = start + 8
+                     for j in range(start, end, 4):
+                        self.buildDisplayList(None, [None], unpack_from(">L", data, j)[0], False)
                   elif (type == 2):
                      for j in range(start, end, 16):
                         near = (data[j+8] << 24)|(data[j+9] << 16)|(data[j+10] << 8)|data[j+11]
                         far = (data[j+12] << 24)|(data[j+13] << 16)|(data[j+14] << 8)|data[j+15]
                         if (near != 0):
-                           self.buildDisplayList(None, [None], near)
+                           self.buildDisplayList(None, [None], near, False)
                         elif (far != 0):
-                           self.buildDisplayList(None, [None], far)
+                           self.buildDisplayList(None, [None], far, False)
             return
          elif (data[i] == 0x14):
             break
@@ -678,6 +717,16 @@ class F3DZEX:
    def importObj(self):
       print("\nLocating hierarchies...")
       self.locateHierarchies()
+
+      if len(self.hierarchy) == 0:
+         print("\nFound zilch. Using display lists, then...")
+         if len(self.displaylists) == 0:
+           print("\n...but none were found...")
+         for dll in self.displaylists:
+           s = dll.decode("utf-8")
+           self.buildDisplayList(None, 0, int(s, 0), True) 
+         return
+
       for hierarchy in self.hierarchy:
          print("\nBuilding hierarchy '%s'..." % hierarchy.name)
          hierarchy.create()
@@ -687,7 +736,7 @@ class F3DZEX:
                if validOffset(self.segment, limb.near):
                   print("   0x%02X : building display lists..." % i)
                   self.resetCombiner()
-                  self.buildDisplayList(hierarchy, limb, limb.near)
+                  self.buildDisplayList(hierarchy, limb, limb.near, False)
                else:
                   print("   0x%02X : out of range" % i)
             else:
@@ -712,7 +761,10 @@ class F3DZEX:
    def resetCombiner(self):
       self.primColor = Vector([1.0, 1.0, 1.0])
       self.envColor = Vector([1.0, 1.0, 1.0])
-      self.vertexColor = Vector([1.0, 1.0, 1.0])
+      if bpy.app.version >= (2, 79, 0):
+      		self.vertexColor = Vector([1.0, 1.0, 1.0, 1.0])
+      else:
+      		self.vertexColor = Vector([1.0, 1.0, 1.0])
       self.shadeColor = Vector([1.0, 1.0, 1.0])
 
    def getCombinerColor(self):
@@ -722,14 +774,21 @@ class F3DZEX:
       if enableEnvColor:
          cc = mulVec(cc, self.envColor)
       if vertexMode == 'COLORS':
-         print(self.vertexColor)
-         cc = mulVec(cc, self.vertexColor)
+         if bpy.app.version >= (2, 79, 0):
+         	cc = Vector([1.0, 1.0, 1.0, 1.0])
+         	cc = mulVec2(cc, self.vertexColor)
+         else:
+         	cc = mulVec(cc, self.vertexColor)
       elif vertexMode == 'NORMALS':
          cc = mulVec(cc, self.shadeColor)
       return cc
 
-   def buildDisplayList(self, hierarchy, limb, offset):
-      data = self.segment[offset >> 24]
+   def buildDisplayList(self, hierarchy, limb, offset, static):
+      if static:
+        data = self.segment[0x6]
+      else:
+        data = self.segment[offset >> 24]
+        
       mesh = Mesh()
       has_tex = False
       material = None
@@ -799,15 +858,24 @@ class F3DZEX:
                         vi2 = vi3
                      elif j == 3 or j == 7:
                         sc = (((v3.normal.x + v3.normal.y + v3.normal.z) / 3) + 1.0) / 2
-                        self.vertexColor = Vector([v3.color[0], v3.color[1], v3.color[2]])
+                        if bpy.app.version >= (2, 79, 0):
+                        	self.vertexColor = Vector([v3.color[0], v3.color[1], v3.color[2], v3.color[3]])
+                        else:
+                        	self.vertexColor = Vector([v3.color[0], v3.color[1], v3.color[2]])
                         self.shadeColor = Vector([sc, sc, sc])
                         mesh.colors.extend([self.getCombinerColor()])
                         sc = (((v2.normal.x + v2.normal.y + v2.normal.z) / 3) + 1.0) / 2
-                        self.vertexColor = Vector([v2.color[0], v2.color[1], v2.color[2]])
+                        if bpy.app.version >= (2, 79, 0):
+                        	self.vertexColor = Vector([v2.color[0], v2.color[1], v2.color[2], v2.color[3]])
+                        else:
+                        	self.vertexColor = Vector([v2.color[0], v2.color[1], v2.color[2]])
                         self.shadeColor = Vector([sc, sc, sc])
                         mesh.colors.extend([self.getCombinerColor()])
                         sc = (((v1.normal.x + v1.normal.y + v1.normal.z) / 3) + 1.0) / 2
-                        self.vertexColor = Vector([v1.color[0], v1.color[1], v1.color[2]])
+                        if bpy.app.version >= (2, 79, 0):
+                        	self.vertexColor = Vector([v1.color[0], v1.color[1], v1.color[2], v1.color[3]])
+                        else:
+                        	self.vertexColor = Vector([v1.color[0], v1.color[1], v1.color[2]])
                         self.shadeColor = Vector([sc, sc, sc])
                         mesh.colors.extend([self.getCombinerColor()])
                         mesh.uvs.extend([(self.tile[0].offset.x + v3.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v3.uv.y * self.tile[0].ratio.y),
@@ -867,7 +935,7 @@ class F3DZEX:
             mesh.__init__()
             offset = (offset >> 24) | i + 8
             if validOffset(self.segment, w1):
-               self.buildDisplayList(hierarchy, limb, w1)
+               self.buildDisplayList(hierarchy, limb, w1, False)
             if data[i + 1] != 0x00:
                return
          elif data[i] == 0xDF:
@@ -1356,11 +1424,11 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                                  description="Import textures for the model",
                                  default=True,)
    enableTexClamp = BoolProperty(name="Texture Clamp",
-                                 description="Enable texture clamping",
-                                 default=True,)
+                                 description="Enable texture clamping, will not place #Clamp tag if enabled",
+                                 default=False,)
    enableTexMirror = BoolProperty(name="Texture Mirror",
-                                  description="Enable texture mirroring",
-                                  default=True,)
+                                  description="Enable texture mirroring, will not place #Mirror tag if enabled",
+                                  default=False,)
    enableToon = BoolProperty(name="Toony UVs",
                              description="Obtain a toony effect by not scaling down the uv coords",
                              default=False,)
@@ -1400,15 +1468,40 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
       print("Importing '%s'..." % fname)
       time_start = time.time()
       f3dzex = F3DZEX()
+      f3dzex.loaddisplaylists(os.path.join(fpath, "displaylists.txt"))
       if self.loadOtherSegments:
          for i in range(16):
-            f3dzex.setSegment(i, fpath + "/segment_%02X.zdata" % i)
+            scenefile = fpath + "/" + fname[0:find_str(fname,"_room")] + "_scene.zscene"
+            if (i == 2 and os.path.isfile(scenefile)):
+               f3dzex.setSegment(i, scenefile)
+            else:
+               f3dzex.setSegment(i, fpath + "/segment_%02X.zdata" % i)
       if fext.lower() == '.zmap':
          f3dzex.setSegment(0x03, self.filepath)
          f3dzex.importMap()
       else:
          f3dzex.setSegment(0x06, self.filepath)
          f3dzex.importObj()
+
+      #Noka here
+      if fext.lower() == '.zmap':
+         for ob in context.scene.objects:
+           if ob.type == 'MESH': # or ob.type == 'ARMATURE'
+               ob.scale = (48.0, 48.0, 48.0)
+               ob.select = True
+               context.scene.objects.active = ob
+               bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+               ob.select = False
+
+         for screen in bpy.data.screens:
+           for area in screen.areas:
+              if area.type == 'VIEW_3D':
+                 area.spaces.active.grid_lines = 500
+                 area.spaces.active.grid_scale = 10
+                 area.spaces.active.grid_subdivisions = 10
+                 area.spaces.active.clip_end = 900000
+      #
+
       print("SUCCESS:  Elapsed time %.4f sec" % (time.time() - time_start))
       bpy.context.scene.update()
       return {'FINISHED'}
@@ -1451,6 +1544,20 @@ def register():
 def unregister():
     bpy.utils.unregister_module(__name__)
     bpy.types.INFO_MT_file_import.remove(menu_func_import)
+
+def find_str(s, char):
+    index = 0
+
+    if char in s:
+        c = char[0]
+        for ch in s:
+            if ch == c:
+                if s[index:index+len(char)] == char:
+                    return index
+
+            index += 1
+
+    return -1
 
 
 if __name__ == "__main__":
