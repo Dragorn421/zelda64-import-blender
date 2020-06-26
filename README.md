@@ -20,3 +20,7 @@ Then, Nokaubure distributed a version with following added features:
 - Scale map models by 48 (it turned out this was just cancelling out the 1/48 scale SoulofDeity implemented)
 - Set Blender's 3D view grid size parameters for maps
 - Made pre-rendered scenes able to import
+
+## Dragorn421
+
+Then, Dragorn421 made changes to import all animations at once instead of only one every import

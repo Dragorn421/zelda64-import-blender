@@ -1,9 +1,9 @@
 bl_info = {
-   "name":		"Zelda64 Importer",
+   "name":		"Zelda64 Importer - all animations",
    "author":		"SoulofDeity",
    "blender":		(2, 6, 0),
    "location":		"File > Import-Export",
-   "description":	"Import Zelda64",
+   "description":	"Import Zelda64 - all animations",
    "warning":		"",
    "wiki_url":		"https://code.google.com/p/sods-blender-plugins/",
    "tracker_url":	"https://code.google.com/p/sods-blender-plugins/",
@@ -434,11 +434,16 @@ class Mesh:
          mod.object = hierarchy.armature
          mod.use_bone_envelopes = False
          mod.use_vertex_groups = True
-      
+      # Dragorn421 here
+      # don't have one animation per object part
+      # TODO what was this for? does removing it break some other tools?
+      """
       if hierarchy is not None:
          ob.animation_data_create()
          action = bpy.data.actions.new(hierarchy.name)
          ob.animation_data.action = action
+      """
+      #
       #print("Action", action)
 
 
@@ -517,8 +522,8 @@ class Hierarchy:
       bpy.ops.object.mode_set(mode='EDIT', toggle=False)
       for i in range(self.limbCount):
          bone = self.armature.data.edit_bones.new("limb_%02i" % i)
-         bone.use_deform = True         
-         bone.head = self.limb[i].pos        
+         bone.use_deform = True
+         bone.head = self.limb[i].pos
          
       for i in range(self.limbCount):
          bone = self.armature.data.edit_bones["limb_%02i" % i]
@@ -752,7 +757,27 @@ class F3DZEX:
             else:    
                 self.locateAnimations()
             if len(self.animation) > 0:
-                self.buildAnimations(self.hierarchy[0], 0)         
+                # Dragorn421 here
+                armature = self.hierarchy[0].armature
+                if armature.animation_data is None:
+                    armature.animation_data_create()
+                global AnimtoPlay
+                for i in range(len(self.animation)):
+                    AnimtoPlay = i + 1
+                    print("   Loading animation %d" % AnimtoPlay)
+                    action = bpy.data.actions.new('anim%d' % AnimtoPlay)
+                    # action.id_root changes became irrelevant after commenting out the code adding individual actions to each obXXXXXX child object
+                    # ?????? "Error: Could not set action 'anim1' onto ID 'ARarmature', as it does not have suitably rooted paths for this purpose"
+                    # api says "DO NOT CHANGE UNLESS YOU KNOW WHAT YOU ARE DOING" PepeHands
+                    #action.id_root = 'ARMATURE'
+                    # not sure if necessary, not sure what users an action is supposed to have, or what it should be linked to
+                    #action.use_fake_user = True
+                    armature.animation_data.action = action
+                    self.buildAnimations(self.hierarchy[0], 0)
+                    # ?????? fixes subsequent (when setting action after import) "Error: Could not set action 'anim1' onto ID 'OBsk_06007958', as it does not have suitably rooted paths for this purpose" (I still don't understand this error message though)
+                    #action.id_root = 'OBJECT'
+                #self.buildAnimations(self.hierarchy[0], 0)
+                #
             else:
                 self.locateLinkAnimations()
          else:
@@ -1331,12 +1356,25 @@ class F3DZEX:
             bpy.ops.transform.rotate(value = RYY, axis=(0, 0, 0), constraint_axis=(False, True, False))           
             bpy.ops.pose.select_all(action="DESELECT")       
 
+      # Dragorn421 here
+      # fix "convertViewVec: called in an invalid context"
+      # TODO: new code works but causes the usual z<->-y axis switch issue between blender/oot if using (x,y,z) and not (x,z,-y)
+      #       somehow bpy.ops.transform.translate calls with (x,y,z) lead to correct behavior, is there some transformation set somewhere?
+      """
       bpy.data.armatures["armature"].bones["limb_00"].select = True ## Translations
       bpy.ops.transform.translate(value =(newLocx, 0, 0), constraint_axis=(True, False, False))
       bpy.ops.transform.translate(value = (0, 0, newLocz), constraint_axis=(False, False, True))
       bpy.ops.transform.translate(value = (0, newLocy, 0), constraint_axis=(False, True, False))
       bpy.ops.pose.select_all(action="DESELECT")
+      """
+      bone = hierarchy.armature.pose.bones["limb_00"]
+      bone.location += mathutils.Vector((newLocx,newLocz,-newLocy))
+      bone.keyframe_insert(data_path='location')
+      #
       
+      # Dragorn421 here
+      # also "repose" after last frame, for next animation: move "repose" code before if/else
+      """
       if (frameCurrent < (frameTotal - 1)):## Next Frame ### Could have done some math here but... just reverse previus frame, so it just repose.
           bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
           
@@ -1384,16 +1422,74 @@ class F3DZEX:
           frameCurrent += 1
           self.buildAnimations(hierarchy, frameCurrent)
       else:
-        bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
-        bpy.context.scene.frame_current = 1
+         bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
+         bpy.context.scene.frame_current = 1
+      """
+      
+      ### Could have done some math here but... just reverse previus frame, so it just repose.
+      bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
+      
+      ## Dragorn421 here
+      """
+      bpy.data.armatures["armature"].bones["limb_00"].select = True ## Translations
+      bpy.ops.transform.translate(value = (-newLocx, 0, 0), constraint_axis=(True, False, False))
+      bpy.ops.transform.translate(value = (0, 0, -newLocz), constraint_axis=(False, False, True))
+      bpy.ops.transform.translate(value = (0, -newLocy, 0), constraint_axis=(False, True, False))
+      bpy.ops.pose.select_all(action="DESELECT")
+      """
+      bone = hierarchy.armature.pose.bones["limb_00"]
+      bone.location -= mathutils.Vector((newLocx,newLocz,-newLocy))
+      ##
+      
+      for i in range(BoneCount):
+         bIndx = i
+         rot_indexx = unpack_from(">h", segment[AniSeg], RotIndexoffset + (bIndx * 6) + 6)[0]
+         rot_indexy = unpack_from(">h", segment[AniSeg], RotIndexoffset + (bIndx * 6) + 8)[0]
+         rot_indexz = unpack_from(">h", segment[AniSeg], RotIndexoffset + (bIndx * 6) + 10)[0]
+
+         rot_indx = rot_indexx
+         rot_indy = rot_indexy
+         rot_indz = rot_indexz
+
+         if (rot_indx > Limit):
+            rot_indx += frameCurrent            
+         if (rot_indy > Limit):
+            rot_indy += frameCurrent
+         if (rot_indz > Limit):
+            rot_indz += frameCurrent
+
+         RX = -rot_valsx[rot_indx] / 182.04444444444444444444
+         RY = rot_valsx[rot_indz] / 182.04444444444444444444
+         RZ = -rot_valsx[rot_indy] / 182.04444444444444444444
+         
+         RXX = radians(RX)
+         RYY = radians(RY)
+         RZZ = radians(RZ)
+
+         #print("limb:", i, "XIdx:", rot_indexx, "YIdx:", rot_indexy , "ZIdx:", rot_indexz, "frameTotal:", frameTotal)
+         #print("limb:", bIndx,"RX", int(RX), "RZ", int(RZ), "RY", int(RY), "anim:", currentanim+1, "frame:", frameCurrent+1, "frameTotal:", frameTotal)
+         if (bIndx > -1):
+            bone = bpy.data.armatures["armature"].bones["limb_%02i" % (bIndx)]				
+            bone.select = True
+            bpy.ops.transform.rotate(value = RYY, axis=(0, 0, 0), constraint_axis=(False, True, False))                
+            bpy.ops.transform.rotate(value = RZZ, axis=(0, 0, 0), constraint_axis=(False, False, True))               
+            bpy.ops.transform.rotate(value = RXX, axis=(0, 0, 0), constraint_axis=(True, False, False))
+            bpy.ops.pose.select_all(action="DESELECT")
+      
+      if (frameCurrent < (frameTotal - 1)):## Next Frame
+          frameCurrent += 1
+          self.buildAnimations(hierarchy, frameCurrent)
+      else:
+         bpy.context.scene.frame_current = 1
+      #
 
 global Animscount
 Animscount = 1        
 
 class ImportZ64(bpy.types.Operator, ImportHelper):
    """Load a Zelda64 File"""
-   bl_idname	= "file.zobj"
-   bl_label	= "Import Zelda64"
+   bl_idname	= "file.zobjallanimations"
+   bl_label	= "Import Zelda64 - all animations"
    bl_options	= {'PRESET', 'UNDO'}
    filename_ext	= ".zobj"
    filter_glob	= StringProperty(default="*.zobj;*.zmap", options={'HIDDEN'})
@@ -1534,7 +1630,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
       row.prop(self, "ExternalAnimes")
 
 def menu_func_import(self, context):
-    self.layout.operator(ImportZ64.bl_idname, text="Zelda64 (.zobj;.zmap)")
+    self.layout.operator(ImportZ64.bl_idname, text="Zelda64 - all animations (.zobj;.zmap)")
 
 
 def register():
