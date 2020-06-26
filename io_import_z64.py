@@ -1,12 +1,13 @@
 bl_info = {
     "name":        "Zelda64 Importer",
+    "version":     (2, 0),
     "author":      "SoulofDeity",
     "blender":     (2, 6, 0),
     "location":    "File > Import-Export",
     "description": "Import Zelda64 - updated in 2020",
     "warning":     "",
-    "wiki_url":    "https://code.google.com/p/sods-blender-plugins/",
-    "tracker_url": "https://code.google.com/p/sods-blender-plugins/",
+    "wiki_url":    "https://github.com/Dragorn421/zelda64-import-blender",
+    "tracker_url": "https://github.com/Dragorn421/zelda64-import-blender",
     "support":     'COMMUNITY',
     "category":    "Import-Export"}
 
