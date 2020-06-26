@@ -123,7 +123,11 @@ class Tile:
             if int(self.clip.y) & 2 != 0 and enableTexClamp:
                img.use_clamp_y = True
          mtl = bpy.data.materials.new(name="mtl_%08X" % self.data)
-         mtl.use_shadeless = True
+         # Dragorn421 here
+         if enableShadelessMaterials:
+            mtl.use_shadeless = True
+         #mtl.use_shadeless = True
+         #
          mt = mtl.texture_slots.add()
          mt.texture = tex
          mt.texture_coords = 'UV'
@@ -373,7 +377,11 @@ class Vertex:
       self.pos.x = unpack_from(">h", segment[seg], offset)[0]
       self.pos.z = unpack_from(">h", segment[seg], offset + 2)[0]
       self.pos.y = -unpack_from(">h", segment[seg], offset + 4)[0]
-      self.pos /= 48 # UDK Scale
+      # Dragorn421 here
+      global scaleFactor
+      self.pos *= scaleFactor
+      #self.pos /= 48 # UDK Scale
+      #
       self.uv.x = float(unpack_from(">h", segment[seg], offset + 8)[0])
       self.uv.y = float(unpack_from(">h", segment[seg], offset + 10)[0])
       self.normal.x = 0.00781250 * unpack_from("b", segment[seg], offset + 12)[0]
@@ -392,6 +400,10 @@ class Mesh:
    def __init__(self):
       self.verts, self.uvs, self.colors, self.faces = [], [], [], []
       self.vgroups = {}
+      # Dragorn421 here
+      # import normals
+      self.normals = []
+      #
 
    def create(self, hierarchy, offset):
       if len(self.faces) == 0:
@@ -424,6 +436,24 @@ class Mesh:
       me.calc_normals()
       me.validate()
       me.update()
+      # Dragorn421 here
+      # import normals
+      """
+      # doesn't work, blender eventually automatically recalculates normals
+      for i in range(len(self.verts)):
+         print(i)
+         print(self.normals[i])
+         me.vertices[i].normal = self.normals[i]
+         print(me.vertices[i].normal)
+      """
+      """
+      # https://blender.stackexchange.com/questions/104650/there-is-a-way-to-add-custom-split-normal-use-python-api/104664#104664
+       # this does set normals in a way that would carry through to oot
+      # however it seems like removing double vertices ruins most of it
+      me.normals_split_custom_set([(0, 0, 0) for l in me.loops])
+      me.normals_split_custom_set_from_vertices(self.normals)
+      """
+      #
       if hierarchy:
          for name, vgroup in self.vgroups.items():
             grp = ob.vertex_groups.new(name)
@@ -434,6 +464,10 @@ class Mesh:
          mod.object = hierarchy.armature
          mod.use_bone_envelopes = False
          mod.use_vertex_groups = True
+         # Dragorn421 here
+         mod.show_in_editmode = True
+         mod.show_on_cage = True
+         #
       # Dragorn421 here
       # don't have one animation per object part
       # TODO what was this for? does removing it break some other tools?
@@ -464,8 +498,12 @@ class Limb:
       
       self.pos.x = unpack_from(">h", segment[seg], offset)[0]            
       self.pos.z = unpack_from(">h", segment[seg], offset + 2)[0]
-      self.pos.y = -unpack_from(">h", segment[seg], offset + 4)[0]    
-      self.pos /= 48 # UDK Scale
+      self.pos.y = -unpack_from(">h", segment[seg], offset + 4)[0]
+      # Dragorn421 here
+      global scaleFactor
+      self.pos *= scaleFactor
+      #self.pos /= 48 # UDK Scale
+      #
       self.child = unpack_from("b", segment[seg], offset + 6)[0]        
       self.sibling = unpack_from("b", segment[seg], offset + 7)[0]
       self.near = unpack_from(">L", segment[seg], offset + 8)[0]          
@@ -618,6 +656,9 @@ class F3DZEX:
       data = self.segment[0x06]
       self.animation = []
       self.offsetAnims = []
+      # Dragorn421 here
+      self.durationAnims = []
+      #
       for i in range(0, len(data), 4):
          if ((data[i] == 0) and (data[i+1] > 1) and
              (data[i+2] == 0) and (data[i+3] == 0) and
@@ -630,6 +671,9 @@ class F3DZEX:
             self.animation.extend([i])
             self.offsetAnims.extend([i])
             self.offsetAnims[self.animTotal] = (0x06 << 24) | i            
+            # Dragorn421 here
+            self.durationAnims.extend([data[i+1] & 0x00FFFFFF])
+            #
             self.animTotal += 1
       if(self.animTotal > 0):    
             print("        Total Anims                   :", self.animTotal)
@@ -750,6 +794,9 @@ class F3DZEX:
          bpy.context.scene.objects.active = self.hierarchy[0].armature
          self.hierarchy[0].armature.select = True
          bpy.ops.object.mode_set(mode='POSE', toggle=False)
+         # Dragorn421 here
+         global AnimtoPlay
+         #
          if (AnimtoPlay > 0):
             bpy.context.scene.frame_end = 1
             if(ExternalAnimes and len(self.segment[0x0F]) > 0):
@@ -761,21 +808,21 @@ class F3DZEX:
                 armature = self.hierarchy[0].armature
                 if armature.animation_data is None:
                     armature.animation_data_create()
-                global AnimtoPlay
                 for i in range(len(self.animation)):
                     AnimtoPlay = i + 1
                     print("   Loading animation %d" % AnimtoPlay)
-                    action = bpy.data.actions.new('anim%d' % AnimtoPlay)
+                    action = bpy.data.actions.new('anim%d_%d' % (AnimtoPlay, self.durationAnims[i]))
                     # action.id_root changes became irrelevant after commenting out the code adding individual actions to each obXXXXXX child object
                     # ?????? "Error: Could not set action 'anim1' onto ID 'ARarmature', as it does not have suitably rooted paths for this purpose"
                     # api says "DO NOT CHANGE UNLESS YOU KNOW WHAT YOU ARE DOING" PepeHands
                     #action.id_root = 'ARMATURE'
-                    # not sure if necessary, not sure what users an action is supposed to have, or what it should be linked to
-                    #action.use_fake_user = True
+                    # not sure what users an action is supposed to have, or what it should be linked to
+                    action.use_fake_user = True
                     armature.animation_data.action = action
                     self.buildAnimations(self.hierarchy[0], 0)
                     # ?????? fixes subsequent (when setting action after import) "Error: Could not set action 'anim1' onto ID 'OBsk_06007958', as it does not have suitably rooted paths for this purpose" (I still don't understand this error message though)
                     #action.id_root = 'OBJECT'
+                bpy.context.scene.frame_end = max(self.durationAnims)
                 #self.buildAnimations(self.hierarchy[0], 0)
                 #
             else:
@@ -873,6 +920,10 @@ class F3DZEX:
                            break
                      if vi3 == -1:
                         mesh.verts.extend([(v3.pos.x, v3.pos.y, v3.pos.z)])
+                        # Dragorn421 here
+                        # import normals
+                        mesh.normals.extend([(v3.normal.x, v3.normal.y, v3.normal.z)])
+                        #
                         vi3 = len(mesh.verts) - 1
                         count += 1
                      if j == 1 or j == 5:
@@ -1289,7 +1340,10 @@ class F3DZEX:
       bpy.context.scene.frame_end = frameTotal
       bpy.context.scene.frame_current = frameCurrent + 1      
       
-      print("currentanim:", currentanim+1, "frameCurrent:", frameCurrent+1)
+      # Dragorn421 here
+      print("anim: %d frame: %d/%d" % (currentanim+1, frameCurrent+1, frameTotal))
+      #print("currentanim:", currentanim+1, "frameCurrent:", frameCurrent+1)
+      #
       for j in range(rot_vals_n):
         rot_valsx.extend([j])
         rot_valsx[j] = unpack_from(">h", segment[AniSeg], (rot_vals_addr) + (j * 2))[0]
@@ -1314,10 +1368,18 @@ class F3DZEX:
       TRZ = rot_valsx[Trot_indy]
       TRY = rot_valsx[Trot_indz]
       
+      # Dragorn421 here
+      global scaleFactor
+      newLocx =  TRX * scaleFactor
+      newLocz =  TRZ * scaleFactor
+      newLocy = -TRY * scaleFactor
+      """
       newLocx = TRX / 79
       newLocz = 10
       newLocz += TRZ / 79
       newLocy = -TRY / 79
+      """
+      #
       #print("X",int(TRX),"Y",int(TRZ),"Z",int(TRY))
      
       #print("       ",frameTotal, "Frames", Limit, "still values", ((rot_vals_n - Limit) / frameTotal), "tracks\n" )
@@ -1521,16 +1583,28 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                                  default=True,)
    enableTexClamp = BoolProperty(name="Texture Clamp",
                                  description="Enable texture clamping, will not place #Clamp tag if enabled",
-                                 default=False,)
+                                 default=True,)# Dragorn421 here: False -> True
    enableTexMirror = BoolProperty(name="Texture Mirror",
                                   description="Enable texture mirroring, will not place #Mirror tag if enabled",
+                                  default=True,)# Dragorn421 here: False -> True
+   # Dragorn421 here
+   enableShadelessMaterials = BoolProperty(name="Shadeless Materials",
+                                  description="Set materials to be shadeless, prevents using environment colors in-game",
                                   default=False,)
+   #
    enableToon = BoolProperty(name="Toony UVs",
                              description="Obtain a toony effect by not scaling down the uv coords",
                              default=False,)
+   # Dragorn421 here
+   originalObjectScale = IntProperty(name="File Scale",
+                             description="Scale of imported object, blender model will be scaled 1/(file scale) (use 48 for maps?)",
+                             default=100,)   
+   """
    AnimtoPlay = IntProperty(name="Anim",
                              description="Choose an anim to Play, if < 1 don't load anims.",
-                             default=1,)                             
+                             default=1,)
+   """
+   #                         
    MajorasAnims = BoolProperty(name="MajorasAnims",
                              description="Majora's Mask Link's Anims.",
                              default=False,)
@@ -1558,9 +1632,18 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
       enableTexClamp = self.enableTexClamp
       enableTexMirror = self.enableTexMirror
       enableToon = self.enableToon
-      AnimtoPlay = self.AnimtoPlay
+      # Dragorn421 here
+      AnimtoPlay = 1
+      #AnimtoPlay = self.AnimtoPlay
+      #
       MajorasAnims = self.MajorasAnims
       ExternalAnimes = self.ExternalAnimes
+      # Dragorn421 here
+      global enableShadelessMaterials
+      enableShadelessMaterials = self.enableShadelessMaterials
+      global scaleFactor
+      scaleFactor = 1 / self.originalObjectScale
+      #
       print("Importing '%s'..." % fname)
       time_start = time.time()
       f3dzex = F3DZEX()
@@ -1622,9 +1705,15 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
       row.prop(self, "enableTexClamp")
       row.prop(self, "enableTexMirror")
       row = box.row(align=True)
+      # Dragorn421 here
+      row.prop(self, "enableShadelessMaterials")
+      #
       row.prop(self, "enableToon")
       row = box.row(align=True)
-      row.prop(self, "AnimtoPlay")
+      # Dragorn421 here
+      row.prop(self, "originalObjectScale")
+      #row.prop(self, "AnimtoPlay")
+      #
       row = box.row(align=True)      
       row.prop(self, "MajorasAnims")
       row.prop(self, "ExternalAnimes")

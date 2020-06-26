@@ -23,4 +23,20 @@ Then, Nokaubure distributed a version with following added features:
 
 ## Dragorn421
 
-Then, Dragorn421 made changes to import all animations at once instead of only one every import
+Then, Dragorn421 made changes to import all animations at once instead of only one every import, and other smaller changes, changelog for these versions was:
+
+**Import Options**
+- Added option to use shadeless materials (don't use environment colors in-game) (default False)
+- Added original object scale option, blender objects will be at inverted scale (default 100, use 48 for maps?)
+- Made Texture Clamp and Texture Mirror options True by default
+- Removed option for animation to import
+
+**Features**
+- Made all animations import at once, each action named animXX_FF where XX is some number and FF the number of frames
+- Removed the (useless) actions every mesh part had
+- Made armature modifier show in edit mode by default
+- Made end frame (in Timeline) be the maximum duration of animations
+- Improved console log a tiny bit (open console before importing to see progress)
+
+**Remarks**
+- Importing normals only lacks ability to apply them reliably (Blender limitations), currently data is lost when merging doubles, so in this version normals are not used at all
