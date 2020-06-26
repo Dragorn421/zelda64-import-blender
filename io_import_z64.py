@@ -8,9 +8,13 @@ bl_info = {
    "wiki_url":		"https://code.google.com/p/sods-blender-plugins/",
    "tracker_url":	"https://code.google.com/p/sods-blender-plugins/",
    "support":		'COMMUNITY',
-   "category":		"Import-Export" }
+   "category":		"Import-Export",
+   
+   "Anim stuff": "RodLima http://www.facebook.com/rod.lima.96?ref=tn_tnmn"
+   }
 
 import bpy, os, struct, time
+import mathutils
 
 from bpy import ops
 from bpy.props import *
@@ -20,10 +24,15 @@ from math import *
 from mathutils import *
 from struct import pack, unpack_from
 
-
+from mathutils import Vector, Euler, Matrix
+ 
 def splitOffset(offset):
    return offset >> 24, offset & 0x00FFFFFF
 
+def translateRotation(rot):
+    """ axis, angle """
+    return Matrix.Rotation(rot[3], 4, Vector(rot[:3]))
+    
 def validOffset(segment, offset):
    seg, offset = splitOffset(offset)
    if seg > 15:
@@ -350,7 +359,7 @@ class Vertex:
       self.pos.x = unpack_from(">h", segment[seg], offset)[0]
       self.pos.z = unpack_from(">h", segment[seg], offset + 2)[0]
       self.pos.y = -unpack_from(">h", segment[seg], offset + 4)[0]
-      self.pos /= 1024
+      self.pos /= 48 # UDK Scale
       self.uv.x = float(unpack_from(">h", segment[seg], offset + 8)[0])
       self.uv.y = float(unpack_from(">h", segment[seg], offset + 10)[0])
       self.normal.x = 0.00781250 * unpack_from("b", segment[seg], offset + 12)[0]
@@ -370,10 +379,11 @@ class Mesh:
       if len(self.faces) == 0:
          return
       me = bpy.data.meshes.new("me_%08X" % offset)
-      ob = bpy.data.objects.new("ob_%08X" % offset, me)
+      ob = bpy.data.objects.new("ob_%08X" % offset, me)      
       bpy.context.scene.objects.link(ob)
       bpy.context.scene.objects.active = ob
-      me.vertices.add(len(self.verts))
+      me.vertices.add(len(self.verts))  
+      
       for i in range(len(self.verts)):
          me.vertices[i].co = self.verts[i]
       me.tessfaces.add(len(self.faces))
@@ -405,28 +415,41 @@ class Mesh:
          mod.object = hierarchy.armature
          mod.use_bone_envelopes = False
          mod.use_vertex_groups = True
+         
+      ob.animation_data_create()
+      action = bpy.data.actions.new(hierarchy.name)
+      ob.animation_data.action = action
+      #print("Action", action)
 
 
 class Limb:
    def __init__(self):
       self.parent, self.child, self.sibling = -1, -1, -1
-      self.pos = Vector([0, 0, 0])
+      self.pos = Vector([0, 0, 0])      
       self.near, self.far = 0x00000000, 0x00000000
       self.poseBone = None
       self.poseLocPath, self.poseRotPath = None, None
-      self.poseLoc, self.poseRot = None, None
-
-   def read(self, segment, offset):
+      self.poseLoc, self.poseRot = Vector([0, 0, 0]), None
+      
+   def read(self, segment, offset, actuallimb, BoneCount):  
       seg, offset = splitOffset(offset)
-      self.pos.x = unpack_from(">h", segment[seg], offset)[0]
+      
+      rot_offset = offset & 0xFFFFFF
+      rot_offset += (0 * (BoneCount * 6 + 8));
+      
+      self.pos.x = unpack_from(">h", segment[seg], offset)[0]            
       self.pos.z = unpack_from(">h", segment[seg], offset + 2)[0]
-      self.pos.y = -unpack_from(">h", segment[seg], offset + 4)[0]
-      self.pos /= 1024
-      self.child = unpack_from("b", segment[seg], offset + 6)[0]
+      self.pos.y = -unpack_from(">h", segment[seg], offset + 4)[0]    
+      self.pos /= 48 # UDK Scale
+      self.child = unpack_from("b", segment[seg], offset + 6)[0]        
       self.sibling = unpack_from("b", segment[seg], offset + 7)[0]
-      self.near = unpack_from(">L", segment[seg], offset + 8)[0]
-      self.far = unpack_from(">L", segment[seg], offset + 12)[0]
-
+      self.near = unpack_from(">L", segment[seg], offset + 8)[0]          
+      self.far = unpack_from(">L", segment[seg], offset + 12)[0]      
+      
+      self.poseLoc.x = unpack_from(">h", segment[seg], rot_offset)[0]      
+      self.poseLoc.z = unpack_from(">h", segment[seg], rot_offset + 2)[0]      
+      self.poseLoc.y = unpack_from(">h", segment[seg], rot_offset + 4)[0]      
+      #print("     Limb ", actuallimb, ":", self.poseLoc.x, ",", self.poseLoc.z, ",", self.poseLoc.y)
 
 class Hierarchy:
    def __init__(self):
@@ -440,27 +463,28 @@ class Hierarchy:
          return
       self.name = "sk_%08X" % offset
       self.offset = offset
-      seg, offset = splitOffset(offset)
+      seg, offset = splitOffset(offset)      
       limbIndex_offset = unpack_from(">L", segment[seg], offset)[0]
       if not validOffset(segment, limbIndex_offset):
          print("      ERROR:  Limb index table 0x%08X out of range" % limbIndex_offset)
          return
       limbIndex_seg, limbIndex_offset = splitOffset(limbIndex_offset)
-      self.limbCount = segment[seg][offset + 4]
+      self.limbCount = segment[seg][offset + 4]      
       self.dlistCount = segment[seg][offset + 8]
       for i in range(self.limbCount):
-         limb_offset = unpack_from(">L", segment[limbIndex_seg], limbIndex_offset + 4 * i)[0]
+         limb_offset = unpack_from(">L", segment[limbIndex_seg], limbIndex_offset + 4 * i)[0]         
          limb = Limb()
          limb.index = i
          self.limb.extend([limb])
          if validOffset(segment, limb_offset + 12):
-            limb.read(segment, limb_offset)
+            limb.read(segment, limb_offset, i, self.limbCount)
          else:
             print("      ERROR:  Limb 0x%02X offset 0x%08X out of range" % (i, limb_offset))[0]
       self.limb[0].pos = Vector([0, 0, 0])
       self.initLimbs(0x00)
 
    def create(self):
+      rx, ry, rz = 90,0,0
       if (bpy.context.active_object):
          bpy.ops.object.mode_set(mode='OBJECT', toggle=False)
       for i in bpy.context.selected_objects:
@@ -473,14 +497,15 @@ class Hierarchy:
       bpy.ops.object.mode_set(mode='EDIT', toggle=False)
       for i in range(self.limbCount):
          bone = self.armature.data.edit_bones.new("limb_%02i" % i)
-         bone.use_deform = True
-         bone.head = self.limb[i].pos
+         bone.use_deform = True         
+         bone.head = self.limb[i].pos        
+         
       for i in range(self.limbCount):
          bone = self.armature.data.edit_bones["limb_%02i" % i]
          if (self.limb[i].parent != -1):
             bone.parent = self.armature.data.edit_bones["limb_%02i" % self.limb[i].parent]
             bone.use_connect = False
-         bone.tail = bone.head + Vector([0, 0, 0.0001])
+         bone.tail = bone.head + Vector([0, 0, 0.0001])         
       bpy.ops.object.mode_set(mode='OBJECT')
 
    def initLimbs(self, i):
@@ -507,6 +532,11 @@ class Hierarchy:
 class F3DZEX:
    def __init__(self):
       self.segment, self.vbuf, self.tile  = [], [], []
+      
+      self.animTotal = 0
+      self.TimeLine = 0
+      self.TimeLinePosition = 0
+       
       for i in range(16):
          self.segment.extend([[]])
          self.vbuf.extend([Vertex()])
@@ -518,9 +548,9 @@ class F3DZEX:
       self.curTile = 0
       self.material = []
       self.hierarchy = []
-      self.resetCombiner()
+      self.resetCombiner()      
 
-   def setSegment(self, seg, path):
+   def setSegment(self, seg, path):      
       try:
          file = open(path, 'rb')
          self.segment[seg] = file.read()
@@ -546,11 +576,12 @@ class F3DZEX:
                      print("   hierarchy found at 0x%08X" % j)
                      h = Hierarchy()
                      h.read(self.segment, j)
-                     self.hierarchy.extend([h])
-
-   def locateAnimations(self):
+                     self.hierarchy.extend([h])                     
+ 
+   def locateAnimations(self):     
       data = self.segment[0x06]
       self.animation = []
+      self.offsetAnims = []
       for i in range(0, len(data), 4):
          if ((data[i] == 0) and (data[i+1] > 1) and
              (data[i+2] == 0) and (data[i+3] == 0) and
@@ -559,8 +590,62 @@ class F3DZEX:
              (data[i+8] == 0x06) and
              (((data[i+9] << 16)|(data[i+10] << 8)|data[i+11]) < len(data)) and
              (data[i+14] == 0) and (data[i+15] == 0)):
-            print("         found at %08X" % i)
+            print("        Anims found at %08X" % i, "Frames:", data[i+1] & 0x00FFFFFF)            
             self.animation.extend([i])
+            self.offsetAnims.extend([i])
+            self.offsetAnims[self.animTotal] = (0x06 << 24) | i            
+            self.animTotal += 1
+      if(self.animTotal > 0):    
+            print("        Total Anims                   :", self.animTotal)
+ 
+   def locateExternAnimations(self):     
+      data = self.segment[0x0F]
+      self.animation = []
+      self.offsetAnims = []
+      for i in range(0, len(data), 4):
+         if ((data[i] == 0) and (data[i+1] > 1) and
+             (data[i+2] == 0) and (data[i+3] == 0) and
+             (data[i+4] == 0x06) and
+             (((data[i+5] << 16)|(data[i+6] << 8)|data[i+7]) < len(data)) and
+             (data[i+8] == 0x06) and
+             (((data[i+9] << 16)|(data[i+10] << 8)|data[i+11]) < len(data)) and
+             (data[i+14] == 0) and (data[i+15] == 0)):
+            print("        Ext Anims found at %08X" % i, "Frames:", data[i+1] & 0x00FFFFFF)
+            self.animation.extend([i])
+            self.offsetAnims.extend([i])
+            self.offsetAnims[self.animTotal] = (0x0F << 24) | i
+            self.animTotal += 1
+      if(self.animTotal > 0):    
+            print("        Total Anims                   :", self.animTotal)
+            
+   def locateLinkAnimations(self):     
+      data = self.segment[0x04]
+      self.animation = []
+      self.offsetAnims = []
+      self.animFrames = []
+      self.animTotal = -1
+      if (len( self.segment[0x04] ) > 0):         
+         if (MajorasAnims):
+             for i in range(0xD000, 0xE4F8, 8):
+               self.animTotal += 1
+               self.animation.extend([self.animTotal])
+               self.animFrames.extend([self.animTotal])
+               self.offsetAnims.extend([self.animTotal])
+               self.offsetAnims[self.animTotal]    = unpack_from(">L", data, i + 4)[0]
+               self.animFrames[self.animTotal] = unpack_from(">h", data, i)[0]
+               #print("- Animation #", self.animTotal+1, "offset: %07X" % self.offsetAnims[self.animTotal], "frames:", self.animFrames[self.animTotal])
+         else:
+             for i in range(0x2310, 0x34F8, 8):
+               self.animTotal += 1
+               self.animation.extend([self.animTotal])
+               self.animFrames.extend([self.animTotal])
+               self.offsetAnims.extend([self.animTotal])
+               self.offsetAnims[self.animTotal]    = unpack_from(">L", data, i + 4)[0]
+               self.animFrames[self.animTotal] = unpack_from(">h", data, i)[0]
+               #print("- Animation #", self.animTotal+1, "offset: %07X" % self.offsetAnims[self.animTotal], "frames:", self.animFrames[self.animTotal])
+      print("       Link has come to town!!!!")
+      if ( (len( self.segment[0x07] ) > 0) and (self.animTotal > 0)):
+         self.buildLinkAnimations(self.hierarchy[0], 0)
 
    def importMap(self):
       data = self.segment[0x03]
@@ -611,9 +696,18 @@ class F3DZEX:
          bpy.context.scene.objects.active = self.hierarchy[0].armature
          self.hierarchy[0].armature.select = True
          bpy.ops.object.mode_set(mode='POSE', toggle=False)
-         self.locateAnimations()
-         if len(self.animation) > 0:
-            self.buildAnimations(self.hierarchy[0])
+         if (AnimtoPlay > 0):
+            bpy.context.scene.frame_end = 1
+            if(ExternalAnimes and len(self.segment[0x0F]) > 0):
+                self.locateExternAnimations()
+            else:    
+                self.locateAnimations()
+            if len(self.animation) > 0:
+                self.buildAnimations(self.hierarchy[0], 0)         
+            else:
+                self.locateLinkAnimations()
+         else:
+            print("   Load anims OFF.")
 
    def resetCombiner(self):
       self.primColor = Vector([1.0, 1.0, 1.0])
@@ -753,8 +847,8 @@ class F3DZEX:
                matrix.pop()
          elif data[i] == 0xDA and enableMatrices:
             if hierarchy and data[i + 4] == 0x0D:
-               if (data[i + 3] & 0x04) == 0:
-                  matrixLimb = hierarchy.getMatrixLimb(unpack_from(">L", data, i + 4)[0])
+               if (data[i + 3] & 0x04) == 0:			      
+                  matrixLimb = hierarchy.getMatrixLimb(unpack_from(">L", data, i + 4)[0])		  
                   if (data[i + 3] & 0x02) == 0:
                      newMatrixLimb = Limb()
                      newMatrixLimb.index = matrixLimb.index
@@ -831,9 +925,402 @@ class F3DZEX:
                pass
             has_tex = True
 
-   def buildAnimations(self, hierarchy):
-      pass
+   def LinkTpose(self, hierarchy):
+      segment = []
+      data = self.segment[0x06]
+      segment = self.segment
+      RX, RY, RZ = 0,0,0
+      BoneCount  = hierarchy.limbCount
+      bpy.context.scene.tool_settings.use_keyframe_insert_auto = True
+      bonesIndx = [0,-90,0,0,0,0,0,0,0,90,0,0,0,180,0,0,-180,0,0,0,0]
+      bonesIndy = [0,90,0,0,0,90,0,0,90,-90,-90,-90,0,0,0,90,0,0,90,0,0]
+      bonesIndz = [0,0,0,0,0,0,0,0,0,0,0,0,0,-90,0,0,90,0,0,0,0]
 
+      print("Link T Pose...")
+      for i in range(BoneCount):
+         bIndx = ((BoneCount-1) - i)
+         if (i > -1):
+            bone = bpy.data.armatures["armature"].bones["limb_%02i" % (bIndx)]
+            bone.select = True
+            bpy.ops.transform.rotate(value = radians(bonesIndx[bIndx]), axis=(0, 0, 0), constraint_axis=(True, False, False))
+            bpy.ops.transform.rotate(value = radians(bonesIndz[bIndx]), axis=(0, 0, 0), constraint_axis=(False, False, True))
+            bpy.ops.transform.rotate(value = radians(bonesIndy[bIndx]), axis=(0, 0, 0), constraint_axis=(False, True, False))
+            bpy.ops.pose.select_all(action="DESELECT")
+
+      bpy.data.armatures["armature"].bones["limb_00"].select = True ## Translations
+      bpy.ops.transform.translate(value =(0, 0, 0), constraint_axis=(True, False, False))
+      bpy.ops.transform.translate(value = (0, 0, 50), constraint_axis=(False, False, True))
+      bpy.ops.transform.translate(value = (0, 0, 0), constraint_axis=(False, True, False))
+      bpy.ops.pose.select_all(action="DESELECT")
+      bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
+
+      for i in range(BoneCount):
+         bIndx = i
+         if (i > -1):
+            bone = bpy.data.armatures["armature"].bones["limb_%02i" % (bIndx)]
+            bone.select = True
+            bpy.ops.transform.rotate(value = radians(-bonesIndy[bIndx]), axis=(0, 0, 0), constraint_axis=(False, True, False))           
+            bpy.ops.transform.rotate(value = radians(-bonesIndz[bIndx]), axis=(0, 0, 0), constraint_axis=(False, False, True))           
+            bpy.ops.transform.rotate(value = radians(-bonesIndx[bIndx]), axis=(0, 0, 0), constraint_axis=(True, False, False))
+            bpy.ops.pose.select_all(action="DESELECT")
+
+      bpy.data.armatures["armature"].bones["limb_00"].select = True ## Translations
+      bpy.ops.transform.translate(value =(0, 0, 0), constraint_axis=(True, False, False))
+      bpy.ops.transform.translate(value = (0, 0, -50), constraint_axis=(False, False, True))
+      bpy.ops.transform.translate(value = (0, 0, 0), constraint_axis=(False, True, False))
+      bpy.ops.pose.select_all(action="DESELECT")      
+
+   def buildLinkAnimations(self, hierarchy, newframe):
+      global AnimtoPlay
+      global Animscount
+      # if (AnimtoPlay == 429 and newframe == 0):
+            # bpy.context.scene.frame_current = 0
+            # self.LinkTpose(hierarchy)
+            # bpy.context.scene.frame_end += 1
+            # bpy.context.scene.frame_current += 1
+            # return
+      segment = []
+      rot_indx = 0
+      rot_indy = 0
+      rot_indz = 0
+      data = self.segment[0x06]
+      segment = self.segment
+      n_anims = self.animTotal
+      seg, offset = splitOffset(hierarchy.offset)
+      BoneCount  = hierarchy.limbCount
+      RX, RY, RZ = 0,0,0
+      frameCurrent = newframe
+
+      if (AnimtoPlay > 0 and AnimtoPlay <= n_anims):
+        currentanim = AnimtoPlay - 1
+      else:
+        currentanim = 0
+
+      print("currentanim:", currentanim+1, "frameCurrent:", frameCurrent+1)
+      AnimationOffset = self.offsetAnims[currentanim]
+      TAnimationOffset = self.offsetAnims[currentanim]
+      AniSeg = AnimationOffset >> 24
+      AnimationOffset &= 0xFFFFFF
+      rot_offset = AnimationOffset
+      rot_offset += (frameCurrent * (BoneCount * 6 + 8))
+      frameTotal = self.animFrames[currentanim]
+      rot_offset += BoneCount * 6
+
+      Trot_offset = TAnimationOffset & 0xFFFFFF
+      Trot_offset += (frameCurrent * (BoneCount * 6 + 8))
+      TRX = unpack_from(">h", segment[AniSeg], Trot_offset)[0]
+      Trot_offset += 2
+      TRZ = unpack_from(">h", segment[AniSeg], Trot_offset)[0]
+      Trot_offset += 2
+      TRY = -unpack_from(">h", segment[AniSeg], Trot_offset)[0]
+      Trot_offset += 2      
+      BoneListListOffset = unpack_from(">L", segment[seg], offset)[0]
+      BoneListListOffset &= 0xFFFFFF
+      
+      BoneOffset = unpack_from(">L", segment[seg], BoneListListOffset + (0 << 2))[0]
+      S_Seg = (BoneOffset >> 24) & 0xFF
+      BoneOffset &= 0xFFFFFF
+      TRX += unpack_from(">h", segment[S_Seg], BoneOffset)[0]
+      TRZ += unpack_from(">h", segment[S_Seg], BoneOffset + 2)[0]
+      TRY += -unpack_from(">h", segment[S_Seg], BoneOffset + 4)[0]
+      newLocx = TRX / 79
+      newLocz = -25.5
+      newLocz += TRZ / 79
+      newLocy = TRY / 79  
+      
+      bpy.context.scene.tool_settings.use_keyframe_insert_auto = True      
+
+      for i in range(BoneCount):
+         bIndx = ((BoneCount-1) - i) # Had to reverse here, cuz didn't find a way to rotate bones on LOCAL space, start rotating from last to first bone on hierarchy GLOBAL.
+         RX = unpack_from(">h", segment[AniSeg], rot_offset)[0]
+         rot_offset -= 2
+         RY = unpack_from(">h", segment[AniSeg], rot_offset + 4)[0]
+         rot_offset -= 2         
+         RZ = unpack_from(">h", segment[AniSeg], rot_offset + 8)[0]
+         rot_offset -= 2          
+         
+         RX /= (182.04444444444444444444)
+         RY /= (182.04444444444444444444)
+         RZ /= (182.04444444444444444444)
+         
+         RXX = (RX)
+         RYY = (-RZ)
+         RZZ = (RY)         
+         
+         #print("limb:", bIndx,"RX", int(RXX), "RZ", int(RZZ), "RY", int(RYY), "anim:", currentanim+1, "frame:", frameCurrent+1)     
+         if (i > -1):            
+            bone = bpy.data.armatures["armature"].bones["limb_%02i" % (bIndx)]
+            bone.select = True
+            bpy.ops.transform.rotate(value = radians(RXX), axis=(0, 0, 0), constraint_axis=(True, False, False))
+            bpy.ops.transform.rotate(value = radians(RZZ), axis=(0, 0, 0), constraint_axis=(False, False, True))
+            bpy.ops.transform.rotate(value = radians(RYY), axis=(0, 0, 0), constraint_axis=(False, True, False))
+            bpy.ops.pose.select_all(action="DESELECT")
+      
+      bpy.data.armatures["armature"].bones["limb_00"].select = True ## Translations
+      bpy.ops.transform.translate(value =(newLocx, 0, 0), constraint_axis=(True, False, False))
+      bpy.ops.transform.translate(value = (0, 0, newLocz), constraint_axis=(False, False, True))
+      bpy.ops.transform.translate(value = (0, newLocy, 0), constraint_axis=(False, True, False))
+      bpy.ops.pose.select_all(action="DESELECT")
+                  
+      if (frameCurrent < (frameTotal - 1)):## Next Frame ### Could have done some math here but... just reverse previus frame, so it just repose.
+          bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
+
+          bpy.data.armatures["armature"].bones["limb_00"].select = True ## Translations
+          bpy.ops.transform.translate(value = (-newLocx, 0, 0), constraint_axis=(True, False, False))   
+          bpy.ops.transform.translate(value = (0, 0, -newLocz), constraint_axis=(False, False, True))
+          bpy.ops.transform.translate(value = (0, -newLocy, 0), constraint_axis=(False, True, False))
+          bpy.ops.pose.select_all(action="DESELECT")
+
+          rot_offset = AnimationOffset
+          rot_offset += (frameCurrent * (BoneCount * 6 + 8))
+          rot_offset += 6
+          for i in range(BoneCount):             
+              RX = unpack_from(">h", segment[AniSeg], rot_offset)[0]
+              rot_offset += 2
+              RY = unpack_from(">h", segment[AniSeg], rot_offset)[0]
+              rot_offset += 2
+              RZ = unpack_from(">h", segment[AniSeg], rot_offset)[0]
+              rot_offset += 2
+
+              RX /= (182.04444444444444444444)
+              RY /= (182.04444444444444444444)
+              RZ /= (182.04444444444444444444)
+
+              RXX = (-RX)
+              RYY = (RZ)
+              RZZ = (-RY)
+             
+              #print("limb:", i,"RX", int(RXX), "RZ", int(RZZ), "RY", int(RYY), "anim:", currentanim+1, "frame:", frameCurrent+1)     
+              if (i > -1):
+                 bone = bpy.data.armatures["armature"].bones["limb_%02i" % (i)]
+                 bone.select = True
+                 bpy.ops.transform.rotate(value = radians(RYY), axis=(0, 0, 0), constraint_axis=(False, True, False))                
+                 bpy.ops.transform.rotate(value = radians(RZZ), axis=(0, 0, 0), constraint_axis=(False, False, True))                
+                 bpy.ops.transform.rotate(value = radians(RXX), axis=(0, 0, 0), constraint_axis=(True, False, False))
+                 bpy.ops.pose.select_all(action="DESELECT")
+          
+          bpy.context.scene.frame_end += 1
+          bpy.context.scene.frame_current += 1
+          frameCurrent += 1
+          self.buildLinkAnimations(hierarchy, frameCurrent)
+      else:        
+        bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
+        # bpy.context.scene.frame_end += 1
+        # bpy.context.scene.frame_current += 1
+        # rot_offset = AnimationOffset
+        # rot_offset += (frameCurrent * (BoneCount * 6 + 8))
+        # rot_offset += 6
+        # for i in range(BoneCount):
+              # RX = unpack_from(">h", segment[AniSeg], rot_offset)[0]
+              # rot_offset += 2
+              # RY = unpack_from(">h", segment[AniSeg], rot_offset)[0]
+              # rot_offset += 2
+              # RZ = unpack_from(">h", segment[AniSeg], rot_offset)[0]
+              # rot_offset += 2
+              # RX /= (182.04444444444444444444)
+              # RY /= (182.04444444444444444444)
+              # RZ /= (182.04444444444444444444)
+              # RXX = (-RX)
+              # RYY = (RZ)
+              # RZZ = (-RY)
+              # if (i > -1):
+                 # bone = bpy.data.armatures["armature"].bones["limb_%02i" % (i)]
+                 # bone.select = True
+                 # bpy.ops.transform.rotate(value = radians(RYY), axis=(0, 0, 0), constraint_axis=(False, True, False))
+                 # bpy.ops.transform.rotate(value = radians(RZZ), axis=(0, 0, 0), constraint_axis=(False, False, True))
+                 # bpy.ops.transform.rotate(value = radians(RXX), axis=(0, 0, 0), constraint_axis=(True, False, False))
+                 # bpy.ops.pose.select_all(action="DESELECT")
+        # bpy.data.armatures["armature"].bones["limb_00"].select = True ## Translations
+        # bpy.ops.transform.translate(value = (-newLocx, 0, 0), constraint_axis=(True, False, False))     
+        # bpy.ops.transform.translate(value = (0, 0, -newLocz), constraint_axis=(False, False, True))
+        # bpy.ops.transform.translate(value = (0, -newLocy, 0), constraint_axis=(False, True, False))
+        # bpy.ops.pose.select_all(action="DESELECT")
+
+        # self.LinkTpose(hierarchy)
+        # bpy.context.scene.frame_end += 1
+        # bpy.context.scene.frame_current += 1
+        
+        # if (AnimtoPlay == 429):
+            # Animscount += 1
+            # if(Animscount > 7):
+               # AnimtoPlay = 428
+            # self.buildLinkAnimations(hierarchy, 0)
+            
+        # if (AnimtoPlay == 429):
+            # Animscount += 1
+            # AnimtoPlay = 430
+            # self.buildLinkAnimations(hierarchy, 0)
+        # else:
+        bpy.context.scene.frame_current = 1
+
+       
+   def buildAnimations(self, hierarchy, newframe):
+      segment = []
+      rot_indx = 0
+      rot_indy = 0
+      rot_indz = 0
+      Trot_indx = 0
+      Trot_indy = 0
+      Trot_indz = 0
+      data = self.segment[0x06]
+      segment = self.segment
+      RX, RY, RZ = 0,0,0
+      rot_valsx = [0x2000]
+      n_anims = self.animTotal
+      if (AnimtoPlay > 0 and AnimtoPlay <= n_anims):
+        currentanim = AnimtoPlay - 1
+      else:
+        currentanim = 0
+
+      AnimationOffset = self.offsetAnims[currentanim]
+      seg, offset = splitOffset(hierarchy.offset)
+      BoneCount  = hierarchy.limbCount
+      frameCurrent = newframe
+
+      if not validOffset(segment, AnimationOffset):
+         return
+
+      AniSeg = AnimationOffset >> 24     
+      AnimationOffset &= 0xFFFFFF
+      
+      frameTotal = unpack_from(">h", segment[AniSeg], (AnimationOffset))[0]
+      rot_vals_addr = unpack_from(">L", segment[AniSeg], (AnimationOffset + 4))[0]
+      RotIndexoffset = unpack_from(">L", segment[AniSeg], (AnimationOffset + 8))[0]
+      Limit = unpack_from(">h", segment[AniSeg], (AnimationOffset + 12))[0]      
+ 
+      rot_vals_n = int ((RotIndexoffset - rot_vals_addr) / 2)
+      rot_vals_addr  &= 0xFFFFFF
+      RotIndexoffset &= 0xFFFFFF
+      
+      bpy.context.scene.tool_settings.use_keyframe_insert_auto = True
+      bpy.context.scene.frame_end = frameTotal
+      bpy.context.scene.frame_current = frameCurrent + 1      
+      
+      print("currentanim:", currentanim+1, "frameCurrent:", frameCurrent+1)
+      for j in range(rot_vals_n):
+        rot_valsx.extend([j])
+        rot_valsx[j] = unpack_from(">h", segment[AniSeg], (rot_vals_addr) + (j * 2))[0]
+
+      ## Translations
+      Trot_indexx = unpack_from(">h", segment[AniSeg], RotIndexoffset)[0]      
+      Trot_indexy = unpack_from(">h", segment[AniSeg], RotIndexoffset + 2)[0]
+      Trot_indexz = unpack_from(">h", segment[AniSeg], RotIndexoffset + 4)[0]
+
+      Trot_indx = Trot_indexx      
+      Trot_indz = Trot_indexz
+      Trot_indy = Trot_indexy
+     
+      if (Trot_indx >= Limit):
+        Trot_indx += frameCurrent
+      if (Trot_indz >= Limit):
+        Trot_indz += frameCurrent
+      if (Trot_indy >= Limit):
+        Trot_indy += frameCurrent
+
+      TRX = rot_valsx[Trot_indx]
+      TRZ = rot_valsx[Trot_indy]
+      TRY = rot_valsx[Trot_indz]
+      
+      newLocx = TRX / 79
+      newLocz = 10
+      newLocz += TRZ / 79
+      newLocy = -TRY / 79
+      #print("X",int(TRX),"Y",int(TRZ),"Z",int(TRY))
+     
+      #print("       ",frameTotal, "Frames", Limit, "still values", ((rot_vals_n - Limit) / frameTotal), "tracks\n" )
+      for i in range(BoneCount):  
+         bIndx = ((BoneCount-1) - i) # Had to reverse here, cuz didn't find a way to rotate bones on LOCAL space, start rotating from last to first bone on hierarchy GLOBAL.
+         rot_indexx = unpack_from(">h", segment[AniSeg], RotIndexoffset + (bIndx * 6) + 6)[0]
+         rot_indexy = unpack_from(">h", segment[AniSeg], RotIndexoffset + (bIndx * 6) + 8)[0]
+         rot_indexz = unpack_from(">h", segment[AniSeg], RotIndexoffset + (bIndx * 6) + 10)[0]
+
+         rot_indx = rot_indexx
+         rot_indy = rot_indexy
+         rot_indz = rot_indexz
+         
+         if (rot_indx >= Limit):
+            rot_indx += frameCurrent
+         if (rot_indy >= Limit):
+            rot_indy += frameCurrent
+         if (rot_indz >= Limit):
+            rot_indz += frameCurrent
+
+         RX = rot_valsx[rot_indx] / 182.04444444444444444444
+         RY = -rot_valsx[rot_indz] / 182.04444444444444444444
+         RZ = rot_valsx[rot_indy] / 182.04444444444444444444
+
+         RXX = radians(RX)
+         RYY = radians(RY)
+         RZZ = radians(RZ)
+
+         #print("limb:", bIndx, "XIdx:", rot_indexx, "YIdx:", rot_indexy , "ZIdx:", rot_indexz, "frameTotal:", frameTotal)
+         #print("limb:", bIndx,"RX", int(RX), "RZ", int(RZ), "RY", int(RY), "anim:", currentanim+1, "frame:", frameCurrent+1, "frameTotal:", frameTotal)
+         if (bIndx > -1):
+            bone = bpy.data.armatures["armature"].bones["limb_%02i" % (bIndx)]
+            bone.select = True
+            bpy.ops.transform.rotate(value = RXX, axis=(0, 0, 0), constraint_axis=(True, False, False))            
+            bpy.ops.transform.rotate(value = RZZ, axis=(0, 0, 0), constraint_axis=(False, False, True))          
+            bpy.ops.transform.rotate(value = RYY, axis=(0, 0, 0), constraint_axis=(False, True, False))           
+            bpy.ops.pose.select_all(action="DESELECT")       
+
+      bpy.data.armatures["armature"].bones["limb_00"].select = True ## Translations
+      bpy.ops.transform.translate(value =(newLocx, 0, 0), constraint_axis=(True, False, False))
+      bpy.ops.transform.translate(value = (0, 0, newLocz), constraint_axis=(False, False, True))
+      bpy.ops.transform.translate(value = (0, newLocy, 0), constraint_axis=(False, True, False))
+      bpy.ops.pose.select_all(action="DESELECT")
+      
+      if (frameCurrent < (frameTotal - 1)):## Next Frame ### Could have done some math here but... just reverse previus frame, so it just repose.
+          bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
+          
+          bpy.data.armatures["armature"].bones["limb_00"].select = True ## Translations
+          bpy.ops.transform.translate(value = (-newLocx, 0, 0), constraint_axis=(True, False, False))   
+          bpy.ops.transform.translate(value = (0, 0, -newLocz), constraint_axis=(False, False, True))
+          bpy.ops.transform.translate(value = (0, -newLocy, 0), constraint_axis=(False, True, False))
+          bpy.ops.pose.select_all(action="DESELECT")
+
+          for i in range(BoneCount):
+             bIndx = i
+             rot_indexx = unpack_from(">h", segment[AniSeg], RotIndexoffset + (bIndx * 6) + 6)[0]
+             rot_indexy = unpack_from(">h", segment[AniSeg], RotIndexoffset + (bIndx * 6) + 8)[0]
+             rot_indexz = unpack_from(">h", segment[AniSeg], RotIndexoffset + (bIndx * 6) + 10)[0]
+
+             rot_indx = rot_indexx
+             rot_indy = rot_indexy
+             rot_indz = rot_indexz
+
+             if (rot_indx > Limit):
+                rot_indx += frameCurrent            
+             if (rot_indy > Limit):
+                rot_indy += frameCurrent
+             if (rot_indz > Limit):
+                rot_indz += frameCurrent
+
+             RX = -rot_valsx[rot_indx] / 182.04444444444444444444
+             RY = rot_valsx[rot_indz] / 182.04444444444444444444
+             RZ = -rot_valsx[rot_indy] / 182.04444444444444444444
+             
+             RXX = radians(RX)
+             RYY = radians(RY)
+             RZZ = radians(RZ)
+
+             #print("limb:", i, "XIdx:", rot_indexx, "YIdx:", rot_indexy , "ZIdx:", rot_indexz, "frameTotal:", frameTotal)
+             #print("limb:", bIndx,"RX", int(RX), "RZ", int(RZ), "RY", int(RY), "anim:", currentanim+1, "frame:", frameCurrent+1, "frameTotal:", frameTotal)
+             if (bIndx > -1):
+                bone = bpy.data.armatures["armature"].bones["limb_%02i" % (bIndx)]				
+                bone.select = True
+                bpy.ops.transform.rotate(value = RYY, axis=(0, 0, 0), constraint_axis=(False, True, False))                
+                bpy.ops.transform.rotate(value = RZZ, axis=(0, 0, 0), constraint_axis=(False, False, True))               
+                bpy.ops.transform.rotate(value = RXX, axis=(0, 0, 0), constraint_axis=(True, False, False))
+                bpy.ops.pose.select_all(action="DESELECT")
+            
+          frameCurrent += 1
+          self.buildAnimations(hierarchy, frameCurrent)
+      else:
+        bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
+        bpy.context.scene.frame_current = 1
+
+global Animscount
+Animscount = 1        
 
 class ImportZ64(bpy.types.Operator, ImportHelper):
    """Load a Zelda64 File"""
@@ -877,7 +1364,16 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
    enableToon = BoolProperty(name="Toony UVs",
                              description="Obtain a toony effect by not scaling down the uv coords",
                              default=False,)
-
+   AnimtoPlay = IntProperty(name="Anim",
+                             description="Choose an anim to Play, if < 1 don't load anims.",
+                             default=1,)                             
+   MajorasAnims = BoolProperty(name="MajorasAnims",
+                             description="Majora's Mask Link's Anims.",
+                             default=False,)
+   ExternalAnimes = BoolProperty(name="ExternalAnimes",
+                             description="Load External Animes.",
+                             default=False,)     
+                             
    def execute(self, context):
       global fpath
       fpath, fext = os.path.splitext(self.filepath)
@@ -887,6 +1383,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
       global importTextures, exportTextures
       global enableTexClamp, enableTexMirror
       global enableMatrices, enableToon
+      global AnimtoPlay, MajorasAnims, ExternalAnimes
       vertexMode = self.vertexMode
       enableMatrices = self.enableMatrices
       enablePrimColor = self.enablePrimColor
@@ -897,6 +1394,9 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
       enableTexClamp = self.enableTexClamp
       enableTexMirror = self.enableTexMirror
       enableToon = self.enableToon
+      AnimtoPlay = self.AnimtoPlay
+      MajorasAnims = self.MajorasAnims
+      ExternalAnimes = self.ExternalAnimes
       print("Importing '%s'..." % fname)
       time_start = time.time()
       f3dzex = F3DZEX()
@@ -934,6 +1434,11 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
       row.prop(self, "enableTexMirror")
       row = box.row(align=True)
       row.prop(self, "enableToon")
+      row = box.row(align=True)
+      row.prop(self, "AnimtoPlay")
+      row = box.row(align=True)      
+      row.prop(self, "MajorasAnims")
+      row.prop(self, "ExternalAnimes")
 
 def menu_func_import(self, context):
     self.layout.operator(ImportZ64.bl_idname, text="Zelda64 (.zobj;.zmap)")
