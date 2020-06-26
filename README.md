@@ -40,3 +40,8 @@ Then, Dragorn421 made changes to import all animations at once instead of only o
 
 **Remarks**
 - Importing normals only lacks ability to apply them reliably (Blender limitations), currently data is lost when merging doubles, so in this version normals are not used at all
+
+Later, these additional changes were made:
+- Support 0xE1 commands for importing display lists, used by level-of-detail stuff
+- Introduced logging
+- Handle importing an object with several hierarchies (skeletons) better
