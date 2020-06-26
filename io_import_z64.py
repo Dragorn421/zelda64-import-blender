@@ -20,10 +20,6 @@ from math import *
 from mathutils import *
 from struct import pack, unpack_from
 
-# Global Defaults (you can change these)
-dumpTextures			= True
-importTextures			= True
-enableShading			= True
 
 def splitOffset(offset):
    return offset >> 24, offset & 0x00FFFFFF
@@ -49,6 +45,9 @@ def powof(val):
       i += 1
    return int(i)
 
+def mulVec(v1, v2):
+   return Vector([v1.x * v2.x, v1.y * v2.y, v1.z * v2.z])
+
 
 class Tile:
    def __init__(self):
@@ -64,20 +63,21 @@ class Tile:
       self.mask = Vector([0, 0])
       self.shift = Vector([0, 0])
       self.tshift = Vector([0, 0])
+      self.offset = Vector([0, 0])
       self.data = 0x00000000
       self.palette = 0x00000000
 
    def create(self, segment):
-      if dumpTextures:
+      if exportTextures:
          try:
             os.mkdir(fpath + "/textures")
          except:
             pass
          w = self.rWidth
-         if int(self.clip.x) & 1 != 0:
+         if int(self.clip.x) & 1 != 0 and enableTexMirror:
             w <<= 1
          h = self.rHeight
-         if int(self.clip.y) & 1 != 0:
+         if int(self.clip.y) & 1 != 0 and enableTexMirror:
             h <<= 1
          file = open(fpath + "/textures/%08X.tga" % self.data, 'wb')
          if self.texFmt == 0x40 or self.texFmt == 0x48 or self.texFmt == 0x50:
@@ -85,7 +85,7 @@ class Tile:
             self.writePalette(file, segment)
          else:
             file.write(pack("<BBBHHBHHHHBB", 0, 0, 2, 0, 0, 0, 0, 0, w, h, 32, 8))
-         if self.clip.y == 1:
+         if int(self.clip.y) & 1 != 0 and enableTexMirror:
             self.writeImageData(file, segment, True)
          else:
             self.writeImageData(file, segment)
@@ -95,9 +95,9 @@ class Tile:
          img = load_image(fpath + "/textures/%08X.tga" % self.data)
          if img:
             tex.image = img
-            if int(self.clip.x) & 2 != 0:
+            if int(self.clip.x) & 2 != 0 and enableTexClamp:
                img.use_clamp_x = True
-            if int(self.clip.y) & 2 != 0:
+            if int(self.clip.y) & 2 != 0 and enableTexClamp:
                img.use_clamp_y = True
          mtl = bpy.data.materials.new(name="mtl_%08X" % self.data)
          mtl.use_shadeless = True
@@ -176,15 +176,15 @@ class Tile:
       if maskHeight > self.height:
          self.mask.y = powof(self.height)
          maskHeight = 1 << int(self.mask.y)
-      if self.clip.x == 2 or self.clip.x == 3:
+      if int(self.clip.x) & 2 != 0:
          self.rWidth = pow2(clampWidth)
-      elif self.clip.x == 1:
+      elif int(self.clip.x) & 1 != 0:
          self.rWidth = pow2(maskWidth)
       else:
          self.rWidth = pow2(self.width)
-      if self.clip.y == 2 or self.clip.y == 3:
+      if int(self.clip.y) & 2 != 0:
          self.rHeight = pow2(clampHeight)
-      elif self.clip.y == 1:
+      elif int(self.clip.y) & 1 != 0:
          self.rHeight = pow2(maskHeight)
       else:
          self.rHeight = pow2(self.height)
@@ -197,12 +197,18 @@ class Tile:
          self.shift.y = 1 << int(16 - self.tshift.y)
       elif self.tshift.y > 0:
          self.shift.y /= 1 << int(self.tshift.y)
-      self.ratio.x = (self.scale.x * self.shift.x) / 32 / self.rWidth
-      if int(self.clip.x) & 1 != 0:
+      self.ratio.x = (self.scale.x * self.shift.x) / self.rWidth
+      if not enableToon:
+         self.ratio.x /= 32;
+      if int(self.clip.x) & 1 != 0 and enableTexMirror:
          self.ratio.x /= 2
-      self.ratio.y = (self.scale.y * self.shift.y) / 32 / self.rHeight
-      if int(self.clip.y) & 1 != 0:
+      self.offset.x = self.rect.x
+      self.ratio.y = (self.scale.y * self.shift.y) / self.rHeight
+      if not enableToon:
+         self.ratio.y /= 32;
+      if int(self.clip.y) & 1 != 0 and enableTexMirror:
          self.ratio.y /= 2
+      self.offset.y = 1.0 + self.rect.y
 
    def writePalette(self, file, segment):
       if self.texFmt == 0x40:
@@ -239,12 +245,16 @@ class Tile:
          bpp = 4
       lineSize = self.rWidth * bpp
       if not validOffset(segment, self.data + int(self.rHeight * lineSize) - 1):
-         for i in range(self.rHeight):
-            for j in range(self.rWidth):
-               if self.texFmt == 0x40 or self.texFmt == 0x48 or self.texFmt == 0x50:
-                  file.write(pack("B", 0))
-               else:
-                  file.write(pack(">L", 0x000000FF))
+         size = self.rWidth * self.rHeight
+         if int(self.clip.x) & 1 != 0 and enableTexMirror:
+            size *= 2
+         if int(self.clip.y) & 1 != 0 and enableTexMirror:
+            size *= 2
+         for i in range(size):
+            if self.texFmt == 0x40 or self.texFmt == 0x48 or self.texFmt == 0x50:
+               file.write(pack("B", 0))
+            else:
+               file.write(pack(">L", 0x000000FF))
          return
       seg, offset = splitOffset(self.data)
       for i in range(dir[0], dir[1], dir[2]):
@@ -312,13 +322,13 @@ class Tile:
             file.write(pack("B" * len(line), *line))
          else:
             file.write(pack(">" + "L" * len(line), *line))
-         if int(self.clip.x) & 1 != 0:
+         if int(self.clip.x) & 1 != 0 and enableTexMirror:
             line.reverse()
             if self.texFmt == 0x40 or self.texFmt == 0x48 or self.texFmt == 0x50:
                file.write(pack("B" * len(line), *line))
             else:
                file.write(pack(">" + "L" * len(line), *line))
-      if int(self.clip.y) & 1 != 0 and df == False:
+      if int(self.clip.y) & 1 != 0 and df == False and enableTexMirror:
          if fy == True:
             self.writeImageData(file, segment, False, True)
          else:
@@ -330,7 +340,7 @@ class Vertex:
       self.pos = Vector([0, 0, 0])
       self.uv = Vector([0, 0])
       self.normal = Vector([0, 0, 0])
-      self.color = (0, 0, 0, 0)
+      self.color = [0, 0, 0, 0]
       self.limb = None
 
    def read(self, segment, offset):
@@ -346,7 +356,9 @@ class Vertex:
       self.normal.x = 0.00781250 * unpack_from("b", segment[seg], offset + 12)[0]
       self.normal.z = 0.00781250 * unpack_from("b", segment[seg], offset + 13)[0]
       self.normal.y = 0.00781250 * unpack_from("b", segment[seg], offset + 14)[0]
-      self.color = 0.00392157 * unpack_from("BBBB", segment[seg], offset + 12)[0]
+      self.color[0] = min(0.00392157 * segment[seg][offset + 12], 1.0)
+      self.color[1] = min(0.00392157 * segment[seg][offset + 13], 1.0)
+      self.color[2] = min(0.00392157 * segment[seg][offset + 14], 1.0)
 
 
 class Mesh:
@@ -399,8 +411,9 @@ class Limb:
    def __init__(self):
       self.parent, self.child, self.sibling = -1, -1, -1
       self.pos = Vector([0, 0, 0])
-      self.dlist = 0x00000000
+      self.near, self.far = 0x00000000, 0x00000000
       self.poseBone = None
+      self.poseLocPath, self.poseRotPath = None, None
       self.poseLoc, self.poseRot = None, None
 
    def read(self, segment, offset):
@@ -411,7 +424,8 @@ class Limb:
       self.pos /= 1024
       self.child = unpack_from("b", segment[seg], offset + 6)[0]
       self.sibling = unpack_from("b", segment[seg], offset + 7)[0]
-      self.dlist = unpack_from(">L", segment[seg], offset + 8)[0]
+      self.near = unpack_from(">L", segment[seg], offset + 8)[0]
+      self.far = unpack_from(">L", segment[seg], offset + 12)[0]
 
 
 class Hierarchy:
@@ -483,7 +497,7 @@ class Hierarchy:
       j = 0
       index = (offset & 0x00FFFFFF) / 0x40
       for i in range(self.limbCount):
-         if self.limb[i].dlist != 0:
+         if self.limb[i].near != 0:
             if (j == index):
                return self.limb[i]
             j += 1
@@ -499,11 +513,12 @@ class F3DZEX:
       for i in range(2):
          self.tile.extend([Tile()])
          self.vbuf.extend([Vertex()])
-      for i in range(14):
+      for i in range(14 + 32):
          self.vbuf.extend([Vertex()])
       self.curTile = 0
       self.material = []
       self.hierarchy = []
+      self.resetCombiner()
 
    def setSegment(self, seg, path):
       try:
@@ -532,6 +547,20 @@ class F3DZEX:
                      h = Hierarchy()
                      h.read(self.segment, j)
                      self.hierarchy.extend([h])
+
+   def locateAnimations(self):
+      data = self.segment[0x06]
+      self.animation = []
+      for i in range(0, len(data), 4):
+         if ((data[i] == 0) and (data[i+1] > 1) and
+             (data[i+2] == 0) and (data[i+3] == 0) and
+             (data[i+4] == 0x06) and
+             (((data[i+5] << 16)|(data[i+6] << 8)|data[i+7]) < len(data)) and
+             (data[i+8] == 0x06) and
+             (((data[i+9] << 16)|(data[i+10] << 8)|data[i+11]) < len(data)) and
+             (data[i+14] == 0) and (data[i+15] == 0)):
+            print("         found at %08X" % i)
+            self.animation.extend([i])
 
    def importMap(self):
       data = self.segment[0x03]
@@ -569,18 +598,41 @@ class F3DZEX:
          hierarchy.create()
          for i in range(hierarchy.limbCount):
             limb = hierarchy.limb[i]
-            if limb.dlist != 0:
-               if validOffset(self.segment, limb.dlist):
+            if limb.near != 0:
+               if validOffset(self.segment, limb.near):
                   print("   0x%02X : building display lists..." % i)
-                  self.buildDisplayList(hierarchy, limb, limb.dlist)
+                  self.resetCombiner()
+                  self.buildDisplayList(hierarchy, limb, limb.near)
                else:
                   print("   0x%02X : out of range" % i)
             else:
                   print("   0x%02X : n/a" % i)
       if len(self.hierarchy) > 0:
-         bpy.context.scene.objects.active = self.hierarchy[len(self.hierarchy) - 1].armature
-         self.hierarchy[len(self.hierarchy) - 1].armature.select = True
+         bpy.context.scene.objects.active = self.hierarchy[0].armature
+         self.hierarchy[0].armature.select = True
          bpy.ops.object.mode_set(mode='POSE', toggle=False)
+         self.locateAnimations()
+         if len(self.animation) > 0:
+            self.buildAnimations(self.hierarchy[0])
+
+   def resetCombiner(self):
+      self.primColor = Vector([1.0, 1.0, 1.0])
+      self.envColor = Vector([1.0, 1.0, 1.0])
+      self.vertexColor = Vector([1.0, 1.0, 1.0])
+      self.shadeColor = Vector([1.0, 1.0, 1.0])
+
+   def getCombinerColor(self):
+      cc = Vector([1.0, 1.0, 1.0])
+      if enablePrimColor:
+         cc = mulVec(cc, self.primColor)
+      if enableEnvColor:
+         cc = mulVec(cc, self.envColor)
+      if vertexMode == 'COLORS':
+         print(self.vertexColor)
+         cc = mulVec(cc, self.vertexColor)
+      elif vertexMode == 'NORMALS':
+         cc = mulVec(cc, self.shadeColor)
+      return cc
 
    def buildDisplayList(self, hierarchy, limb, offset):
       data = self.segment[offset >> 24]
@@ -629,74 +681,93 @@ class F3DZEX:
                has_tex = False
             v1, v2 = None, None
             vi1, vi2 = -1, -1
-            for j in range(1, (data[i] - 4) * 4):
-               if j != 4:
-                  v3 = self.vbuf[data[i + j] >> 1]
-                  vi3 = -1
-                  for k in range(len(mesh.verts)):
-                     if mesh.verts[k] == (v3.pos.x, v3.pos.y, v3.pos.z):
-                        vi3 = k
-                        break
-                  if vi3 == -1:
-                     mesh.verts.extend([(v3.pos.x, v3.pos.y, v3.pos.z)])
-                     vi3 = len(mesh.verts) - 1
-                  if j == 1 or j == 5:
-                     v1 = v3
-                     vi1 = vi3
-                  elif j == 2 or j == 6:
-                     v2 = v3
-                     vi2 = vi3
-                  elif j == 3 or j == 7:
-                     if enableShading:
-                        n1 = (((v1.normal.x + v1.normal.y + v1.normal.z) / 3) + 1.5) / 2
-                        n2 = (((v2.normal.x + v2.normal.y + v2.normal.z) / 3) + 1.5) / 2
-                        n3 = (((v3.normal.x + v3.normal.y + v3.normal.z) / 3) + 1.5) / 2
-                     else:
-                        n1, n2, n3 = 1.0, 1.0, 1.0
-                     mesh.colors.extend([(n1, n1, n1), (n2, n2, n2), (n3, n3, n3)])
-                     mesh.uvs.extend([(v1.uv.x * self.tile[0].ratio.x, 1.0 - v1.uv.y * self.tile[0].ratio.y),
-                                      (v2.uv.x * self.tile[0].ratio.x, 1.0 - v2.uv.y * self.tile[0].ratio.y),
-                                      (v3.uv.x * self.tile[0].ratio.x, 1.0 - v3.uv.y * self.tile[0].ratio.y),
-                                      material])
-                     if hierarchy:
-                        if v1.limb:
-                           if not (("limb_%02i" % v1.limb.index) in mesh.vgroups):
-                              mesh.vgroups["limb_%02i" % v1.limb.index] = []
-                           mesh.vgroups["limb_%02i" % v1.limb.index].extend([vi1])
-                        if v2.limb:
-                           if not (("limb_%02i" % v2.limb.index) in mesh.vgroups):
-                              mesh.vgroups["limb_%02i" % v2.limb.index] = []
-                           mesh.vgroups["limb_%02i" % v2.limb.index].extend([vi2])
-                        if v3.limb:
-                           if not (("limb_%02i" % v3.limb.index) in mesh.vgroups):
-                              mesh.vgroups["limb_%02i" % v3.limb.index] = []
-                           mesh.vgroups["limb_%02i" % v3.limb.index].extend([vi3])
-                     mesh.faces.extend([(vi3, vi2, vi1)])
+            if not importTextures:
+               material = None
+            count = 0
+            try:
+               for j in range(1, (data[i] - 4) * 4):
+                  if j != 4:
+                     v3 = self.vbuf[data[i + j] >> 1]
+                     vi3 = -1
+                     for k in range(len(mesh.verts)):
+                        if mesh.verts[k] == (v3.pos.x, v3.pos.y, v3.pos.z):
+                           vi3 = k
+                           break
+                     if vi3 == -1:
+                        mesh.verts.extend([(v3.pos.x, v3.pos.y, v3.pos.z)])
+                        vi3 = len(mesh.verts) - 1
+                        count += 1
+                     if j == 1 or j == 5:
+                        v1 = v3
+                        vi1 = vi3
+                     elif j == 2 or j == 6:
+                        v2 = v3
+                        vi2 = vi3
+                     elif j == 3 or j == 7:
+                        sc = (((v1.normal.x + v1.normal.y + v1.normal.z) / 3) + 1.0) / 2
+                        self.vertexColor = Vector([v1.color[0], v1.color[1], v1.color[2]])
+                        self.shadeColor = Vector([sc, sc, sc])
+                        mesh.colors.extend([self.getCombinerColor()])
+                        sc = (((v2.normal.x + v2.normal.y + v2.normal.z) / 3) + 1.0) / 2
+                        self.vertexColor = Vector([v2.color[0], v2.color[1], v2.color[2]])
+                        self.shadeColor = Vector([sc, sc, sc])
+                        mesh.colors.extend([self.getCombinerColor()])
+                        sc = (((v3.normal.x + v3.normal.y + v3.normal.z) / 3) + 1.0) / 2
+                        self.vertexColor = Vector([v3.color[0], v3.color[1], v3.color[2]])
+                        self.shadeColor = Vector([sc, sc, sc])
+                        mesh.colors.extend([self.getCombinerColor()])
+                        mesh.uvs.extend([(self.tile[0].offset.x + v1.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v1.uv.y * self.tile[0].ratio.y),
+                                         (self.tile[0].offset.x + v2.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v2.uv.y * self.tile[0].ratio.y),
+                                         (self.tile[0].offset.x + v3.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v3.uv.y * self.tile[0].ratio.y),
+                                         material])
+                        if hierarchy:
+                           if v1.limb:
+                              if not (("limb_%02i" % v1.limb.index) in mesh.vgroups):
+                                 mesh.vgroups["limb_%02i" % v1.limb.index] = []
+                              mesh.vgroups["limb_%02i" % v1.limb.index].extend([vi1])
+                           if v2.limb:
+                              if not (("limb_%02i" % v2.limb.index) in mesh.vgroups):
+                                 mesh.vgroups["limb_%02i" % v2.limb.index] = []
+                              mesh.vgroups["limb_%02i" % v2.limb.index].extend([vi2])
+                           if v3.limb:
+                              if not (("limb_%02i" % v3.limb.index) in mesh.vgroups):
+                                 mesh.vgroups["limb_%02i" % v3.limb.index] = []
+                              mesh.vgroups["limb_%02i" % v3.limb.index].extend([vi3])
+                        mesh.faces.extend([(vi3, vi2, vi1)])
+            except:
+               for i in range(count):
+                  mesh.verts.pop()
          elif data[i] == 0xD7:
-            for i in range(2):
-               if ((w1 >> 16) & 0xFFFF) < 0xFFFF:
-                  self.tile[i].scale.x = ((w1 >> 16) & 0xFFFF) * 0.0000152587891
-               else:
-                  self.tile[i].scale.x = 1.0
-               if (w1 & 0xFFFF) < 0xFFFF:
-                  self.tile[i].scale.y = (w1 & 0xFFFF) * 0.0000152587891
-               else:
-                  self.tile[i].scale.y = 1.0
-         elif data[i] == 0xD8:
-            if hierarchy and len(matrix) > 0:
+#            for i in range(2):
+#               if ((w1 >> 16) & 0xFFFF) < 0xFFFF:
+#                  self.tile[i].scale.x = ((w1 >> 16) & 0xFFFF) * 0.0000152587891
+#               else:
+#                  self.tile[i].scale.x = 1.0
+#               if (w1 & 0xFFFF) < 0xFFFF:
+#                  self.tile[i].scale.y = (w1 & 0xFFFF) * 0.0000152587891
+#               else:
+#                  self.tile[i].scale.y = 1.0
+            pass
+         elif data[i] == 0xD8 and enableMatrices:
+            if hierarchy and len(matrix) > 1:
                matrix.pop()
-         elif data[i] == 0xDA:
-            if hierarchy and (data[i + 4] & 0x04) != 0:
-               matrixLimb = hierarchy.getMatrixLimb(unpack_from(">L", data, i + 4)[0])
-               if (data[i + 3] & 0x02) == 0:
-                  newMatrixLimb = Limb()
-                  newMatrixLimb.index = matrixLimb.index
-                  newMatrixLimb.pos = Vector([matrixLimb.pos.x, matrixLimb.pos.y, matrixLimb.pos.z]) + matrix[len(matrix) - 1].pos
-                  matrixLimb = newMatrixLimb
-               if (data[i + 3] & 0x01) == 0:
-                  matrix.append(matrixLimb)
+         elif data[i] == 0xDA and enableMatrices:
+            if hierarchy and data[i + 4] == 0x0D:
+               if (data[i + 3] & 0x04) == 0:
+                  matrixLimb = hierarchy.getMatrixLimb(unpack_from(">L", data, i + 4)[0])
+                  if (data[i + 3] & 0x02) == 0:
+                     newMatrixLimb = Limb()
+                     newMatrixLimb.index = matrixLimb.index
+                     newMatrixLimb.pos = (Vector([matrixLimb.pos.x, matrixLimb.pos.y, matrixLimb.pos.z]) + matrix[len(matrix) - 1].pos) / 2
+                     matrixLimb = newMatrixLimb
+                  if (data[i + 3] & 0x01) == 0:
+                     matrix.extend([matrixLimb])
+                  else:
+                     matrix[len(matrix) - 1] = matrixLimb
                else:
-                  matrix[len(matrix) - 1] = matrixLimb
+                  matrix.extend([matrix[len(matrix) - 1]])
+            elif hierarchy:
+               print("unknown limb %08X %08X" % (w0, w1))
          elif data[i] == 0xDE:
             mesh.create(hierarchy, offset)
             mesh.__init__()
@@ -725,6 +796,8 @@ class F3DZEX:
             if (self.tile[self.curTile].texBytes >> 16) == 0xFFFF:
                self.tile[self.curTile].texBytes = self.tile[self.curTile].size << 16 >> 15
             self.tile[self.curTile].calculateSize()
+         elif data[i] == 0xF4 or data[i] == 0xE4 or data[i] == 0xFE or data[i] == 0xFF:
+            print("%08X : %08X" % (w0, w1))
          elif data[i] == 0xF5:
             self.tile[self.curTile].texFmt = (w0 >> 16) & 0xFF
             self.tile[self.curTile].txlSize = (w0 >> 19) & 0x03
@@ -735,6 +808,12 @@ class F3DZEX:
             self.tile[self.curTile].mask.y = (w1 >> 14) & 0x0F
             self.tile[self.curTile].tshift.x = w1 & 0x0F
             self.tile[self.curTile].tshift.y = (w1 >> 10) & 0x0F
+         elif data[i] == 0xFA:
+            self.primColor = Vector([min(0.003922 * ((w1 >> 24) & 0xFF), 1.0), min(0.003922 * ((w1 >> 16) & 0xFF), 1.0), min(0.003922 * ((w1 >> 8) & 0xFF), 1.0)])
+         elif data[i] == 0xFB:
+            self.envColor = Vector([min(0.003922 * ((w1 >> 24) & 0xFF), 1.0), min(0.003922 * ((w1 >> 16) & 0xFF), 1.0), min(0.003922 * ((w1 >> 8) & 0xFF), 1.0)])
+            if invertEnvColor:
+               self.envColor = Vector([1.0, 1.0, 1.0]) - self.envColor
          elif data[i] == 0xFD:
             try:
                if data[i - 8] == 0xF2:
@@ -752,6 +831,9 @@ class F3DZEX:
                pass
             has_tex = True
 
+   def buildAnimations(self, hierarchy):
+      pass
+
 
 class ImportZ64(bpy.types.Operator, ImportHelper):
    """Load a Zelda64 File"""
@@ -760,16 +842,67 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
    bl_options	= {'PRESET', 'UNDO'}
    filename_ext	= ".zobj"
    filter_glob	= StringProperty(default="*.zobj;*.zmap", options={'HIDDEN'})
+   loadOtherSegments = BoolProperty(name="Load Data From Other Segments",
+                                    description="Load data from other segments",
+                                    default=True,)
+   vertexMode = EnumProperty(name="Vtx Mode",
+                             items=(('COLORS', "COLORS", "Use vertex colors"),
+                                    ('NORMALS', "NORMALS", "Use vertex normals as shading"),
+                                    ('NONE', "NONE", "Don't use vertex colors or normals"),),
+                             default='NORMALS',)
+   enableMatrices = BoolProperty(name="Matrices",
+                                 description="Enable texture mirroring",
+                                 default=True,)
+   enablePrimColor = BoolProperty(name="Prim Color",
+                                  description="Enable blending with primitive color",
+                                  default=True,)
+   enableEnvColor = BoolProperty(name="Env Color",
+                                 description="Enable blending with environment color",
+                                 default=True,)
+   invertEnvColor = BoolProperty(name="Invert Env Color",
+                                 description="Invert environment color (temporary fix)",
+                                 default=False,)
+   exportTextures = BoolProperty(name="Export Textures",
+                                 description="Export textures for the model",
+                                 default=True,)
+   importTextures = BoolProperty(name="Import Textures",
+                                 description="Import textures for the model",
+                                 default=True,)
+   enableTexClamp = BoolProperty(name="Texture Clamp",
+                                 description="Enable texture clamping",
+                                 default=True,)
+   enableTexMirror = BoolProperty(name="Texture Mirror",
+                                  description="Enable texture mirroring",
+                                  default=True,)
+   enableToon = BoolProperty(name="Toony UVs",
+                             description="Obtain a toony effect by not scaling down the uv coords",
+                             default=False,)
 
    def execute(self, context):
       global fpath
       fpath, fext = os.path.splitext(self.filepath)
       fpath, fname = os.path.split(fpath)
+      global vertexMode, enableMatrices
+      global enablePrimColor, enableEnvColor, invertEnvColor
+      global importTextures, exportTextures
+      global enableTexClamp, enableTexMirror
+      global enableMatrices, enableToon
+      vertexMode = self.vertexMode
+      enableMatrices = self.enableMatrices
+      enablePrimColor = self.enablePrimColor
+      enableEnvColor = self.enableEnvColor
+      invertEnvColor = self.invertEnvColor
+      importTextures = self.importTextures
+      exportTextures = self.exportTextures
+      enableTexClamp = self.enableTexClamp
+      enableTexMirror = self.enableTexMirror
+      enableToon = self.enableToon
       print("Importing '%s'..." % fname)
       time_start = time.time()
       f3dzex = F3DZEX()
-      for i in range(16):
-         f3dzex.setSegment(i, fpath + "/segment_%02X.zdata" % i)
+      if self.loadOtherSegments:
+         for i in range(16):
+            f3dzex.setSegment(i, fpath + "/segment_%02X.zdata" % i)
       if fext.lower() == '.zmap':
          f3dzex.setSegment(0x03, self.filepath)
          f3dzex.importMap()
@@ -780,6 +913,27 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
       bpy.context.scene.update()
       return {'FINISHED'}
 
+   def draw(self, context):
+      layout = self.layout
+      row = layout.row(align=True)
+      row.prop(self, "vertexMode")
+      row = layout.row(align=True)
+      row.prop(self, "loadOtherSegments")
+      box = layout.box()
+      row = box.row(align=True)
+      row.prop(self, "enableMatrices")
+      row.prop(self, "enablePrimColor")
+      row = box.row(align=True)
+      row.prop(self, "enableEnvColor")
+      row.prop(self, "invertEnvColor")
+      row = box.row(align=True)
+      row.prop(self, "exportTextures")
+      row.prop(self, "importTextures")
+      row = box.row(align=True)
+      row.prop(self, "enableTexClamp")
+      row.prop(self, "enableTexMirror")
+      row = box.row(align=True)
+      row.prop(self, "enableToon")
 
 def menu_func_import(self, context):
     self.layout.operator(ImportZ64.bl_idname, text="Zelda64 (.zobj;.zmap)")
