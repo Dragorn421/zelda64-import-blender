@@ -704,36 +704,36 @@ class F3DZEX:
                         v2 = v3
                         vi2 = vi3
                      elif j == 3 or j == 7:
-                        sc = (((v1.normal.x + v1.normal.y + v1.normal.z) / 3) + 1.0) / 2
-                        self.vertexColor = Vector([v1.color[0], v1.color[1], v1.color[2]])
+                        sc = (((v3.normal.x + v3.normal.y + v3.normal.z) / 3) + 1.0) / 2
+                        self.vertexColor = Vector([v3.color[0], v3.color[1], v3.color[2]])
                         self.shadeColor = Vector([sc, sc, sc])
                         mesh.colors.extend([self.getCombinerColor()])
                         sc = (((v2.normal.x + v2.normal.y + v2.normal.z) / 3) + 1.0) / 2
                         self.vertexColor = Vector([v2.color[0], v2.color[1], v2.color[2]])
                         self.shadeColor = Vector([sc, sc, sc])
                         mesh.colors.extend([self.getCombinerColor()])
-                        sc = (((v3.normal.x + v3.normal.y + v3.normal.z) / 3) + 1.0) / 2
-                        self.vertexColor = Vector([v3.color[0], v3.color[1], v3.color[2]])
+                        sc = (((v1.normal.x + v1.normal.y + v1.normal.z) / 3) + 1.0) / 2
+                        self.vertexColor = Vector([v1.color[0], v1.color[1], v1.color[2]])
                         self.shadeColor = Vector([sc, sc, sc])
                         mesh.colors.extend([self.getCombinerColor()])
-                        mesh.uvs.extend([(self.tile[0].offset.x + v1.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v1.uv.y * self.tile[0].ratio.y),
+                        mesh.uvs.extend([(self.tile[0].offset.x + v3.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v3.uv.y * self.tile[0].ratio.y),
                                          (self.tile[0].offset.x + v2.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v2.uv.y * self.tile[0].ratio.y),
-                                         (self.tile[0].offset.x + v3.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v3.uv.y * self.tile[0].ratio.y),
+                                         (self.tile[0].offset.x + v1.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v1.uv.y * self.tile[0].ratio.y),
                                          material])
                         if hierarchy:
-                           if v1.limb:
-                              if not (("limb_%02i" % v1.limb.index) in mesh.vgroups):
-                                 mesh.vgroups["limb_%02i" % v1.limb.index] = []
-                              mesh.vgroups["limb_%02i" % v1.limb.index].extend([vi1])
-                           if v2.limb:
-                              if not (("limb_%02i" % v2.limb.index) in mesh.vgroups):
-                                 mesh.vgroups["limb_%02i" % v2.limb.index] = []
-                              mesh.vgroups["limb_%02i" % v2.limb.index].extend([vi2])
                            if v3.limb:
                               if not (("limb_%02i" % v3.limb.index) in mesh.vgroups):
                                  mesh.vgroups["limb_%02i" % v3.limb.index] = []
                               mesh.vgroups["limb_%02i" % v3.limb.index].extend([vi3])
-                        mesh.faces.extend([(vi3, vi2, vi1)])
+                           if v2.limb:
+                              if not (("limb_%02i" % v2.limb.index) in mesh.vgroups):
+                                 mesh.vgroups["limb_%02i" % v2.limb.index] = []
+                              mesh.vgroups["limb_%02i" % v2.limb.index].extend([vi2])
+                           if v1.limb:
+                              if not (("limb_%02i" % v1.limb.index) in mesh.vgroups):
+                                 mesh.vgroups["limb_%02i" % v1.limb.index] = []
+                              mesh.vgroups["limb_%02i" % v1.limb.index].extend([vi1])
+                        mesh.faces.extend([(vi1, vi2, vi3)])
             except:
                for i in range(count):
                   mesh.verts.pop()
