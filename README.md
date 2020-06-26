@@ -1,6 +1,24 @@
 # zelda64-import-blender
 
-This is an addon allowing to import models and animations from files extracted from N64 Zelda roms.
+This is a Blender addon allowing to import models and animations from files extracted from N64 Zelda roms.
+
+Required Blender version: 2.79 or earlier
+
+You should open the system console (`Window > Toggle System Console` in Blender) before importing an object so you can see the progress being made, as the Blender UI freezes during the import process.
+
+The messages in the system console may also help understand why an import is failing.
+
+# Limitations
+
+For some reason the animations for the Bari (jellyfish in jabujabu) don't import.
+
+Importing Link's animations may be broken.
+
+# Data from other segments
+
+Data from other segments will be loaded from files named `segment_XX.zdata` located in the same directory as the imported file, if any, where `XX` is the segment number in hex.
+
+For segment 2 (scene segment) data will load from `XXX_scene.zscene` assuming the imported file is named like `XXX_room.*`, or from `segment_02.zdata`, or from any `.zscene` file, trying in that order.
 
 # History
 
@@ -45,3 +63,5 @@ Later, these additional changes were made:
 - Support 0xE1 commands for importing display lists, used by level-of-detail stuff
 - Introduced logging
 - Handle importing an object with several hierarchies (skeletons) better
+
+At this point, version number was introduced to be 2.0
