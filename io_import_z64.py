@@ -1158,8 +1158,24 @@ class F3DZEX:
                     else:
                         self.tile[self.curTile].data = w1
                 except:
+                    log.exception('Failed to switch texel data? at 0x%X', i)
                     pass
                 has_tex = True
+            # G_CULLDL, G_BRANCH_Z, G_SETOTHERMODE_L, G_SETOTHERMODE_H, G_RDPLOADSYNC, G_RDPTILESYNC, G_LOADBLOCK,
+            elif data[i] in (0x03,0x04,0xE2,0xE3,0xE6,0xE8,0xF3,):
+                # not relevant for importing
+                pass
+            # G_GEOMETRYMODE
+            elif data[i] == 0xD9:
+                # https://wiki.cloudmodding.com/oot/F3DZEX#RSP_Geometry_Mode
+                pass # todo
+            # G_SETCOMBINE
+            elif data[i] == 0xFC:
+                # https://wiki.cloudmodding.com/oot/F3DZEX/Opcode_Details#0xFC_.E2.80.94_G_SETCOMBINE
+                pass # todo
+            else:
+                log.warning('Skipped (unimplemented) opcode 0x%02X' % data[i])
+        log.warning('Reached end of data')
 
     def LinkTpose(self, hierarchy):
         log = getLogger('F3DZEX.LinkTpose')
