@@ -104,12 +104,6 @@ def powof(val):
         i += 1
     return int(i)
 
-def mulVec(v1, v2):
-    return Vector([v1.x * v2.x, v1.y * v2.y, v1.z * v2.z])
-
-def mulVec2(v1, v2):
-    return Vector([v1.x * v2.x, v1.y * v2.y, v1.z * v2.z, v1[3] * v2[3]])
-
 def checkUseVertexAlpha():
     global useVertexAlpha
     return useVertexAlpha
@@ -888,8 +882,8 @@ class F3DZEX:
                 log.info("    Load anims OFF.")
 
     def resetCombiner(self):
-        self.primColor = Vector([1.0, 1.0, 1.0])
-        self.envColor = Vector([1.0, 1.0, 1.0])
+        self.primColor = Vector([1.0, 1.0, 1.0, 1.0])
+        self.envColor = Vector([1.0, 1.0, 1.0, 1.0])
         if checkUseVertexAlpha():
             self.vertexColor = Vector([1.0, 1.0, 1.0, 1.0])
         else:
@@ -897,20 +891,21 @@ class F3DZEX:
         self.shadeColor = Vector([1.0, 1.0, 1.0])
 
     def getCombinerColor(self):
-        cc = Vector([1.0, 1.0, 1.0])
+        def mult4d(v1, v2):
+            return Vector([v1[i] * v2[i] for i in range(4)])
+        cc = Vector([1.0, 1.0, 1.0, 1.0])
         if enablePrimColor:
-            cc = mulVec(cc, self.primColor)
+            cc = mult4d(cc, self.primColor)
         if enableEnvColor:
-            cc = mulVec(cc, self.envColor)
+            cc = mult4d(cc, self.envColor)
         if vertexMode == 'COLORS':
-            if checkUseVertexAlpha():
-                cc = Vector([1.0, 1.0, 1.0, 1.0])
-                cc = mulVec2(cc, self.vertexColor)
-            else:
-                cc = mulVec(cc, self.vertexColor)
+            cc = mult4d(cc, self.vertexColor.to_4d())
         elif vertexMode == 'NORMALS':
-            cc = mulVec(cc, self.shadeColor)
-        return cc
+            cc = mult4d(cc, self.shadeColor.to_4d())
+        if checkUseVertexAlpha():
+            return cc
+        else:
+            return cc.xyz
 
     def buildDisplayList(self, hierarchy, limb, offset, static):
         log = getLogger('F3DZEX.buildDisplayList')
@@ -1118,11 +1113,19 @@ class F3DZEX:
                 self.tile[self.curTile].tshift.x = w1 & 0x0F
                 self.tile[self.curTile].tshift.y = (w1 >> 10) & 0x0F
             elif data[i] == 0xFA:
-                self.primColor = Vector([min(0.003922 * ((w1 >> 24) & 0xFF), 1.0), min(0.003922 * ((w1 >> 16) & 0xFF), 1.0), min(0.003922 * ((w1 >> 8) & 0xFF), 1.0)])
+                self.primColor = Vector([((w1 >> (8*(3-i))) & 0xFF) / 255 for i in range(4)])
+                log.debug('new primColor -> %r', self.primColor)
+                if enablePrimColor and self.primColor.w != 1 and not checkUseVertexAlpha():
+                    log.warning('primColor %r has non-opaque alpha, merging it into vertex colors may produce unexpected results' % self.primColor)
+                #self.primColor = Vector([min(((w1 >> 24) & 0xFF) / 255, 1.0), min(0.003922 * ((w1 >> 16) & 0xFF), 1.0), min(0.003922 * ((w1 >> 8) & 0xFF), 1.0), min(0.003922 * ((w1) & 0xFF), 1.0)])
             elif data[i] == 0xFB:
-                self.envColor = Vector([min(0.003922 * ((w1 >> 24) & 0xFF), 1.0), min(0.003922 * ((w1 >> 16) & 0xFF), 1.0), min(0.003922 * ((w1 >> 8) & 0xFF), 1.0)])
+                self.envColor = Vector([((w1 >> (8*(3-i))) & 0xFF) / 255 for i in range(4)])
+                log.debug('new envColor -> %r', self.envColor)
+                if enableEnvColor and self.envColor.w != 1 and not checkUseVertexAlpha():
+                    log.warning('envColor %r has non-opaque alpha, merging it into vertex colors may produce unexpected results' % self.envColor)
+                #self.envColor = Vector([min(0.003922 * ((w1 >> 24) & 0xFF), 1.0), min(0.003922 * ((w1 >> 16) & 0xFF), 1.0), min(0.003922 * ((w1 >> 8) & 0xFF), 1.0)])
                 if invertEnvColor:
-                    self.envColor = Vector([1.0, 1.0, 1.0]) - self.envColor
+                    self.envColor = Vector([1 - c for c in self.envColor])
             elif data[i] == 0xFD:
                 try:
                     if data[i - 8] == 0xF2:
@@ -1534,16 +1537,16 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                              default='NORMALS',)
     useVertexAlpha = BoolProperty(name="Use vertex alpha",
                                  description="Only enable if your version of blender has native support",
-                                 default=(bpy.app.version == (2,79,0) and bpy.app.version_char == 'c'),)
+                                 default=(bpy.app.version == (2,79,7) and bpy.app.build_hash == b'10f724cec5e3'),)
     enableMatrices = BoolProperty(name="Matrices",
                                  description="Use 0xDA G_MTX and 0xD8 G_POPMTX commands",
                                  default=True,)
     enablePrimColor = BoolProperty(name="Prim Color",
                                   description="Enable blending with primitive color",
-                                  default=True,) # this may be nice for strictly importing but exporting again won't be exact then?
+                                  default=False,) # this may be nice for strictly importing but exporting again will then not be exact
     enableEnvColor = BoolProperty(name="Env Color",
                                  description="Enable blending with environment color",
-                                 default=True,) # same
+                                 default=False,) # same as primColor above
     invertEnvColor = BoolProperty(name="Invert Env Color",
                                  description="Invert environment color (temporary fix)",
                                  default=False,) # todo what is this?
