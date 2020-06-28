@@ -127,6 +127,7 @@ class Tile:
         self.palette = 0x00000000
 
     def create(self, segment):
+        # todo texture files are written several times, at each usage
         log = getLogger('Tile.create')
         if exportTextures:
             try:
@@ -155,9 +156,9 @@ class Tile:
             if int(self.clip.y) & 2 != 0 and enableTexClampSharpOcarinaTags:
                 extrastring += "#ClampY"
             self.current_texture_file_path = fpath + ("/textures/%08X" % self.data) + str(extrastring) + ".tga"
-            log.debug('Writing texture %s' % self.current_texture_file_path)
+            log.debug('Writing texture %s (format 0x%02X)' % (self.current_texture_file_path, self.texFmt))
             file = open(self.current_texture_file_path, 'wb')
-            if self.texFmt == 0x40 or self.texFmt == 0x48 or self.texFmt == 0x50:
+            if self.texFmt in (0x40, 0x48, 0x50):
                 file.write(pack("<BBBHHBHHHHBB", 0, 1, 1, 0, 256, 24, 0, 0, w, h, 8, 0))
                 self.writePalette(file, segment)
             else:
@@ -183,7 +184,7 @@ class Tile:
             mt.texture = tex
             mt.texture_coords = 'UV'
             mt.use_map_color_diffuse = True
-            if (img.depth == 32):
+            if self.texFmt in (0x40,0x60,0x48,0x50,0x00,0x08,0x10,0x68,0x70,0x18):
                 mt.use_map_alpha = True
                 tex.use_mipmap = True
                 tex.use_interpolation = True
@@ -316,13 +317,16 @@ class Tile:
             dir = (0, self.rHeight, 1)
         else:
             dir = (self.rHeight - 1, -1, -1)
-        if self.texFmt == 0x40 or self.texFmt == 0x60 or self.texFmt == 0x80 or self.texFmt == 0x90:
+        if self.texFmt in (0x40, 0x60, 0x80, 0x90):
             bpp = 0.5
-        elif self.texFmt == 0x00 or self.texFmt == 0x08 or self.texFmt == 0x10 or self.texFmt == 0x70:
+        elif self.texFmt in (0x00, 0x08, 0x10, 0x70):
             bpp = 2
-        elif self.texFmt == 0x48 or self.texFmt == 0x50 or self.texFmt == 0x68 or self.texFmt == 0x88:
+        elif self.texFmt in (0x48, 0x50, 0x68, 0x88):
             bpp = 1
+        elif self.texFmt in (0x18,):
+            bpp = 4
         else:
+            log.warning('Unknown texture format 0x%02X for texture %s' % (self.texFmt, self.current_texture_file_path))
             bpp = 4
         lineSize = self.rWidth * bpp
         if not validOffset(segment, self.data + int(self.rHeight * lineSize) - 1):
@@ -355,6 +359,14 @@ class Tile:
                         a = color >> 4
                     else:
                         a = color & 0x0F
+                # IA4
+                elif self.texFmt == 0x60:
+                    if floor(j) == j:
+                        color = color >> 4
+                    r = int(((color >> 1) & 0b111) * 255 / 7)
+                    g = r
+                    b = r
+                    a = 255 if color & 1 else 0
                 elif self.texFmt == 0x48 or self.texFmt == 0x50:
                     a = color
                 elif self.texFmt == 0x00 or self.texFmt == 0x08 or self.texFmt == 0x10:
