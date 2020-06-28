@@ -1175,7 +1175,7 @@ class F3DZEX:
                 pass # todo
             else:
                 log.warning('Skipped (unimplemented) opcode 0x%02X' % data[i])
-        log.warning('Reached end of data')
+        log.warning('Reached end of dlist started at 0x%X', offset)
 
     def LinkTpose(self, hierarchy):
         log = getLogger('F3DZEX.LinkTpose')
