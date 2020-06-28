@@ -2,9 +2,9 @@
 
 This is a Blender addon allowing to import models and animations from files extracted from N64 Zelda roms.
 
-Required Blender version: 2.79 or earlier
+**Required Blender version: 2.79 or earlier**
 
-You should open the system console (`Window > Toggle System Console` in Blender) before importing an object so you can see the progress being made, as the Blender UI freezes during the import process.
+**You should open the system console** (`Window > Toggle System Console` in Blender) before importing an object so you can see the progress being made, as the Blender UI freezes during the import process.
 
 The messages in the system console may also help understand why an import is failing.
 
@@ -65,3 +65,5 @@ Later, these additional changes were made:
 - Handle importing an object with several hierarchies (skeletons) better (thanks Nokaubure for pointing that out)
 
 At this point, version number was introduced to be 2.0
+
+Further changes are documented by release tags and commit history.
