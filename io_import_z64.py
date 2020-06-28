@@ -50,7 +50,7 @@ def registerLogging(level=logging.INFO):
     root_logger_formatter = logging.Formatter('%(levelname)s:%(name)s: %(message)s')
     root_logger_stream_handler.setFormatter(root_logger_formatter)
     root_logger.addHandler(root_logger_stream_handler)
-    #root_logger.setLevel(1) # may be needed
+    root_logger.setLevel(1) # actual level filtering is left to handlers
     root_logger_stream_handler.setLevel(level)
     getLogger('setupLogging').debug('Logging OK')
 
