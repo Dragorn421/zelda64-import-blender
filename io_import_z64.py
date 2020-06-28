@@ -135,7 +135,7 @@ class Tile:
             except FileExistsError:
                 pass
             except:
-                log.error('Could not create textures directory %s' % (fpath + "/textures"))
+                log.exception('Could not create textures directory %s' % (fpath + "/textures"))
                 pass
             #Noka here
             extrastring = ""
@@ -194,6 +194,7 @@ class Tile:
                 mtl.game_settings.alpha_blend = 'ALPHA'
             return mtl
         except:
+            log.exception('Failed to create material mtl_%08X %r', self.data)
             return None
 
     def calculateSize(self):
@@ -219,6 +220,8 @@ class Tile:
         elif self.texFmt == 0x18:
             maxTxl = 1024
             lineShift = 2
+        else:
+            log.warning('Unknown size for texture %s with format 0x%02X' % (self.current_texture_file_path, self.texFmt))
         lineWidth = self.lineSize << lineShift
         self.lineSize = lineWidth
         tileWidth = self.rect.z - self.rect.x + 1
@@ -1041,6 +1044,8 @@ class F3DZEX:
                                 if vi1==vi2 or vi1==vi3 or vi2==vi3:
                                      log.warning('Found empty tri! %d %d %d' % (vi1, vi2, vi3))
                 except:
+                    log.exception('Failed to import vertices and normals/vertex colors from 0x%X', i)
+                    # todo this is reverting changes on verts, but mesh.vgroups and mesh.faces were changed too. oversight?
                     for i in range(count):
                         mesh.verts.pop()
             elif data[i] == 0xD7:
@@ -1145,6 +1150,7 @@ class F3DZEX:
                     else:
                         self.curTile = 0
                 except:
+                    log.exception('Failed to switch texel? at 0x%X', i)
                     pass
                 try:
                     if data[i + 8] == 0xE8:
@@ -1669,13 +1675,15 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                 scene_file = None
                 for f in os.listdir(fpath):
                     if f.endswith('.zscene'):
-                        if segment_data_file:
-                            log.warning('Found another .zscene file %s, keeping %s' % (f, segment_data_file))
+                        if scene_file:
+                            log.warning('Found another .zscene file %s, keeping %s' % (f, scene_file))
                         else:
-                            segment_data_file = fpath + '/' + f
+                            scene_file = fpath + '/' + f
             if scene_file and os.path.isfile(scene_file):
                 log.info('Loading scene segment 0x02 from %s' % scene_file)
                 f3dzex.loadSegment(2, scene_file)
+            else:
+                log.debug('No file found to load scene segment 0x02 from')
             for i in range(16):
                 if i == 2:
                     continue
@@ -1685,7 +1693,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                     log.info('Loading segment 0x%02X from %s' % (i, segment_data_file))
                     f3dzex.loadSegment(i, segment_data_file)
                 else:
-                    log.debug('No file found to load segment 0x%02X from')
+                    log.debug('No file found to load segment 0x%02X from', i)
         if fext.lower() == '.zmap':
             log.debug('Importing map')
             f3dzex.loadSegment(0x03, self.filepath)
