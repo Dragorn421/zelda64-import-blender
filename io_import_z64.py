@@ -466,6 +466,7 @@ class Vertex:
 class Mesh:
     def __init__(self):
         self.verts, self.uvs, self.colors, self.faces = [], [], [], []
+        self.faces_use_smooth = []
         self.vgroups = {}
         # import normals
         self.normals = []
@@ -488,6 +489,7 @@ class Mesh:
         vcd = me.tessface_vertex_colors.new().data
         for i in range(len(self.faces)):
             me.tessfaces[i].vertices = self.faces[i]
+            me.tessfaces[i].use_smooth = self.faces_use_smooth[i]
 
             vcd[i].color1 = self.colors[i * 3 + 2]
             vcd[i].color2 = self.colors[i * 3 + 1]
@@ -653,6 +655,7 @@ class Hierarchy:
 class F3DZEX:
     def __init__(self):
         self.segment, self.vbuf, self.tile  = [], [], []
+        self.geometryModeFlags = None
 
         self.animTotal = 0
         self.TimeLine = 0
@@ -909,13 +912,15 @@ class F3DZEX:
         def mult4d(v1, v2):
             return Vector([v1[i] * v2[i] for i in range(4)])
         cc = Vector([1.0, 1.0, 1.0, 1.0])
+        # todo these have an effect even if vertexMode == 'NONE' ?
         if enablePrimColor:
             cc = mult4d(cc, self.primColor)
         if enableEnvColor:
             cc = mult4d(cc, self.envColor)
-        if vertexMode == 'COLORS':
+        # todo assume G_LIGHTING means normals if set, and colors if clear, but G_SHADE may play a role too?
+        if vertexMode == 'COLORS' or (vertexMode == 'AUTO' and 'G_LIGHTING' not in self.geometryModeFlags):
             cc = mult4d(cc, self.vertexColor.to_4d())
-        elif vertexMode == 'NORMALS':
+        elif vertexMode == 'NORMALS' or (vertexMode == 'AUTO' and 'G_LIGHTING' in self.geometryModeFlags):
             cc = mult4d(cc, self.shadeColor.to_4d())
         if checkUseVertexAlpha():
             return cc
@@ -936,6 +941,9 @@ class F3DZEX:
             matrix = [limb]
         else:
             matrix = [None]
+        if self.geometryModeFlags is None:
+            self.geometryModeFlags = set()
+        
         log.debug('Reading dlists from 0x%08X', offset)
         for i in range(offset & 0x00FFFFFF, len(data), 8):
             w0 = unpack_from(">L", data, i)[0]
@@ -1041,6 +1049,7 @@ class F3DZEX:
                                             mesh.vgroups["limb_%02i" % v1.limb.index] = []
                                         mesh.vgroups["limb_%02i" % v1.limb.index].append(vi1)
                                 mesh.faces.append((vi1, vi2, vi3))
+                                mesh.faces_use_smooth.append('G_SHADE' in self.geometryModeFlags and 'G_SHADING_SMOOTH' in self.geometryModeFlags)
                                 if vi1==vi2 or vi1==vi3 or vi2==vi3:
                                      log.warning('Found empty tri! %d %d %d' % (vi1, vi2, vi3))
                 except:
@@ -1048,7 +1057,9 @@ class F3DZEX:
                     # todo this is reverting changes on verts, but mesh.vgroups and mesh.faces were changed too. oversight?
                     for i in range(count):
                         mesh.verts.pop()
+            # G_TEXTURE
             elif data[i] == 0xD7:
+                # fixme ?
 #                for i in range(2):
 #                    if ((w1 >> 16) & 0xFFFF) < 0xFFFF:
 #                        self.tile[i].scale.x = ((w1 >> 16) & 0xFFFF) * 0.0000152587891
@@ -1059,10 +1070,13 @@ class F3DZEX:
 #                    else:
 #                        self.tile[i].scale.y = 1.0
                 pass
+            # G_POPMTX
             elif data[i] == 0xD8 and enableMatrices:
                 if hierarchy and len(matrix) > 1:
                     matrix.pop()
+            # G_MTX
             elif data[i] == 0xDA and enableMatrices:
+                # fixme this looks super weird, not sure what it's doing either
                 if hierarchy and data[i + 4] == 0x0D:
                     if (data[i + 3] & 0x04) == 0:
                         matrixLimb = hierarchy.getMatrixLimb(unpack_from(">L", data, i + 4)[0])
@@ -1086,9 +1100,11 @@ class F3DZEX:
                 if validOffset(self.segment, w1):
                     self.buildDisplayList(hierarchy, limb, w1, False)
                 if data[i + 1] != 0x00:
+                    self.geometryModeFlags = None
                     return
             elif data[i] == 0xDF:
                 mesh.create(hierarchy, offset)
+                self.geometryModeFlags = None
                 return
             # handle "LOD dlists"
             elif data[i] == 0xE1:
@@ -1117,6 +1133,7 @@ class F3DZEX:
                 if (self.tile[self.curTile].texBytes >> 16) == 0xFFFF:
                     self.tile[self.curTile].texBytes = self.tile[self.curTile].size << 16 >> 15
                 self.tile[self.curTile].calculateSize()
+            # G_LOADTILE, G_TEXRECT, G_SETZIMG, G_SETCIMG (2d "direct" drawing?)
             elif data[i] == 0xF4 or data[i] == 0xE4 or data[i] == 0xFE or data[i] == 0xFF:
                 log.info("%08X : %08X", w0, w1)
             elif data[i] == 0xF5:
@@ -1168,7 +1185,36 @@ class F3DZEX:
             # G_GEOMETRYMODE
             elif data[i] == 0xD9:
                 # https://wiki.cloudmodding.com/oot/F3DZEX#RSP_Geometry_Mode
-                pass # todo
+                # todo SharpOcarina tags
+                geometryModeMasks = {
+                    'G_ZBUFFER':            0b00000000000000000000000000000001,
+                    'G_SHADE':              0b00000000000000000000000000000100, # used by 0x05/0x06 for mesh.faces_use_smooth
+                    'G_CULL_FRONT':         0b00000000000000000000001000000000, # todo set culling (not possible per-face or per-material or even per-object apparently) / SharpOcarina tags
+                    'G_CULL_BACK':          0b00000000000000000000010000000000, # todo same
+                    'G_FOG':                0b00000000000000010000000000000000,
+                    'G_LIGHTING':           0b00000000000000100000000000000000,
+                    'G_TEXTURE_GEN':        0b00000000000001000000000000000000, # todo billboarding?
+                    'G_TEXTURE_GEN_LINEAR': 0b00000000000010000000000000000000, # todo billboarding?
+                    'G_SHADING_SMOOTH':     0b00000000001000000000000000000000, # used by 0x05/0x06 for mesh.faces_use_smooth
+                    'G_CLIPPING':           0b00000000100000000000000000000000,
+                }
+                clearbits = ~w0 & 0x00FFFFFF
+                setbits = w1
+                for flagName, flagMask in geometryModeMasks.items():
+                    if clearbits & flagMask:
+                        self.geometryModeFlags.discard(flagName)
+                        clearbits = clearbits & ~flagMask
+                    if setbits & flagMask:
+                        self.geometryModeFlags.add(flagName)
+                        setbits = setbits & ~flagMask
+                log.debug('Geometry mode flags as of 0x%X: %r', i, self.geometryModeFlags)
+                """
+                # many unknown flags. keeping this commented out for any further research
+                if clearbits:
+                    log.warning('Unknown geometry mode flag at 0x%X in clearbits %s', i, bin(clearbits))
+                if setbits:
+                    log.warning('Unknown geometry mode flag at 0x%X in setbits %s', i, bin(setbits))
+                """
             # G_SETCOMBINE
             elif data[i] == 0xFC:
                 # https://wiki.cloudmodding.com/oot/F3DZEX/Opcode_Details#0xFC_.E2.80.94_G_SETCOMBINE
@@ -1176,6 +1222,7 @@ class F3DZEX:
             else:
                 log.warning('Skipped (unimplemented) opcode 0x%02X' % data[i])
         log.warning('Reached end of dlist started at 0x%X', offset)
+        self.geometryModeFlags = None
 
     def LinkTpose(self, hierarchy):
         log = getLogger('F3DZEX.LinkTpose')
@@ -1567,8 +1614,10 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
     vertexMode = EnumProperty(name="Vtx Mode",
                              items=(('COLORS', "COLORS", "Use vertex colors"),
                                     ('NORMALS', "NORMALS", "Use vertex normals as shading"),
-                                    ('NONE', "NONE", "Don't use vertex colors or normals"),),
-                             default='NORMALS',)
+                                    ('NONE', "NONE", "Don't use vertex colors or normals"),
+                                    ('AUTO', "AUTO", "Switch between normals and vertex colors automatically according to 0xD9 G_GEOMETRYMODE flags"),),
+                             description="Legacy option, shouldn't be useful",
+                             default='AUTO',)
     useVertexAlpha = BoolProperty(name="Use vertex alpha",
                                  description="Only enable if your version of blender has native support",
                                  default=(bpy.app.version == (2,79,7) and bpy.app.build_hash == b'10f724cec5e3'),)
