@@ -936,17 +936,17 @@ class F3DZEX:
             matrix = [limb]
         else:
             matrix = [None]
-        log.debug('Reading dlists from %08X' % offset)
+        log.debug('Reading dlists from 0x%08X', offset)
         for i in range(offset & 0x00FFFFFF, len(data), 8):
             w0 = unpack_from(">L", data, i)[0]
             w1 = unpack_from(">L", data, i + 4)[0]
             if data[i] == 0x01:
-                count = (data[i + 1] << 4) | (data[i + 2] >> 4)
-                index = (data[i + 3] >> 1) - count
-                offset = unpack_from(">L", data, i + 4)[0]
-                if validOffset(self.segment, offset + int(16 * count) - 1):
+                count = (w0 >> 12) & 0xFF
+                index = ((w0 & 0xFF) >> 1) - count
+                vaddr = w1
+                if validOffset(self.segment, vaddr + int(16 * count) - 1):
                     for j in range(count):
-                        self.vbuf[index + j].read(self.segment, offset + 16 * j)
+                        self.vbuf[index + j].read(self.segment, vaddr + 16 * j)
                         if hierarchy:
                             self.vbuf[index + j].limb = matrix[len(matrix) - 1]
                             if self.vbuf[index + j].limb:
