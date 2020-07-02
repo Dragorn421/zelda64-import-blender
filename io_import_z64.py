@@ -15,6 +15,7 @@ bl_info = {
 
 import bpy, os, struct, time
 import mathutils
+import re
 
 from bpy import ops
 from bpy.props import *
@@ -67,7 +68,6 @@ def setLogFile(path):
         root_logger_file_handler = logging.FileHandler(path, mode='w')
         root_logger_file_handler.setFormatter(root_logger_formatter)
         root_logger.addHandler(root_logger_file_handler)
-        # fixme logfile isn't logging TRACE
         root_logger_file_handler.setLevel(1)
 
 def unregisterLogging():
@@ -110,10 +110,11 @@ def checkUseVertexAlpha():
 
 class Tile:
     def __init__(self):
+        self.current_texture_file_path = None
         self.texFmt, self.texBytes = 0x00, 0
         self.width, self.height = 0, 0
         self.rWidth, self.rHeight = 0, 0
-        self.txlSize = 0
+        self.texSiz = 0
         self.lineSize = 0
         self.rect = Vector([0, 0, 0, 0])
         self.scale = Vector([1, 1])
@@ -126,10 +127,19 @@ class Tile:
         self.data = 0x00000000
         self.palette = 0x00000000
 
-    def create(self, segment):
+    def getFormatName(self):
+        fmt = ['RGBA','YUV','CI','IA','I']
+        siz = ['4','8','16','32']
+        return '%s%s' % (
+            fmt[self.texFmt] if self.texFmt < len(fmt) else 'UnkFmt',
+            siz[self.texSiz] if self.texSiz < len(siz) else '_UnkSiz'
+        )
+
+    def create(self, segment, use_transparency):
         # todo texture files are written several times, at each usage
         log = getLogger('Tile.create')
-        if exportTextures:
+        fmtName = self.getFormatName()
+        if exportTextures: # fixme exportTextures == False breaks the script
             try:
                 os.mkdir(fpath + "/textures")
             except FileExistsError:
@@ -155,36 +165,68 @@ class Tile:
                 extrastring += "#ClampX"
             if int(self.clip.y) & 2 != 0 and enableTexClampSharpOcarinaTags:
                 extrastring += "#ClampY"
-            self.current_texture_file_path = fpath + ("/textures/%08X" % self.data) + str(extrastring) + ".tga"
-            log.debug('Writing texture %s (format 0x%02X)' % (self.current_texture_file_path, self.texFmt))
-            file = open(self.current_texture_file_path, 'wb')
-            if self.texFmt in (0x40, 0x48, 0x50):
-                file.write(pack("<BBBHHBHHHHBB", 0, 1, 1, 0, 256, 24, 0, 0, w, h, 8, 0))
-                self.writePalette(file, segment)
-            else:
-                file.write(pack("<BBBHHBHHHHBB", 0, 0, 2, 0, 0, 0, 0, 0, w, h, 32, 8))
-            if int(self.clip.y) & 1 != 0 and replicateTexMirrorBlender:
-                self.writeImageData(file, segment, True)
-            else:
-                self.writeImageData(file, segment)
-            file.close()
+            self.current_texture_file_path = fpath + ('/textures/%s_%08X' % (fmtName, self.data)) + str(extrastring) + '.tga'
+            if not os.path.isfile(self.current_texture_file_path):
+                log.debug('Writing texture %s (format 0x%02X)' % (self.current_texture_file_path, self.texFmt))
+                file = open(self.current_texture_file_path, 'wb')
+                if self.texFmt == 2:
+                    if self.texSiz not in (0, 1):
+                        log.error('Unknown texture format %d with pixel size %d', self.texFmt, self.texSiz)
+                    p = 16 if self.texSiz == 0 else 256
+                    file.write(pack("<BBBHHBHHHHBB",
+                        0,  # image comment length
+                        1,  # 1 = paletted
+                        1,  # 1 = indexed uncompressed colors
+                        0,  # index of first palette entry (?)
+                        p,  # amount of entries in palette
+                        32, # bits per pixel
+                        0,  # bottom left X (?)
+                        0,  # bottom left Y (?)
+                        w,  # width
+                        h,  # height
+                        8,  # pixel depth
+                        8   # 8 bits alpha hopefully?
+                    ))
+                    self.writePalette(file, segment, p)
+                else:
+                    file.write(pack("<BBBHHBHHHHBB",
+                        0, # image comment length
+                        0, # no palette
+                        2, # uncompressed Truecolor (24-32 bits)
+                        0, # irrelevant, no palette
+                        0, # irrelevant, no palette
+                        0, # irrelevant, no palette
+                        0, # bottom left X (?)
+                        0, # bottom left Y (?)
+                        w, # width
+                        h, # height
+                        32,# pixel depth
+                        8  # 8 bits alpha (?)
+                    ))
+                if int(self.clip.y) & 1 != 0 and replicateTexMirrorBlender:
+                    self.writeImageData(file, segment, True)
+                else:
+                    self.writeImageData(file, segment)
+                file.close()
         try:
-            tex = bpy.data.textures.new(name="tex_%08X" % self.data, type='IMAGE')
-            img = load_image(fpath + ("/textures/%08X" % self.data) + str(extrastring) + ".tga")
+            tex_name = 'tex_%s_%08X' % (fmtName,self.data)
+            tex = bpy.data.textures.new(name=tex_name, type='IMAGE')
+            img = load_image(fpath + ('/textures/%s_%08X' % (fmtName, self.data)) + str(extrastring) + '.tga')
             if img:
                 tex.image = img
                 if int(self.clip.x) & 2 != 0 and enableTexClampBlender:
                     img.use_clamp_x = True
                 if int(self.clip.y) & 2 != 0 and enableTexClampBlender:
                     img.use_clamp_y = True
-            mtl = bpy.data.materials.new(name="mtl_%08X" % self.data)
+            mtl_name = 'mtl_%08X' % self.data
+            mtl = bpy.data.materials.new(name=mtl_name)
             if enableShadelessMaterials:
                 mtl.use_shadeless = True
             mt = mtl.texture_slots.add()
             mt.texture = tex
             mt.texture_coords = 'UV'
             mt.use_map_color_diffuse = True
-            if self.texFmt in (0x40,0x60,0x48,0x50,0x00,0x08,0x10,0x68,0x70,0x18):
+            if use_transparency:
                 mt.use_map_alpha = True
                 tex.use_mipmap = True
                 tex.use_interpolation = True
@@ -198,30 +240,46 @@ class Tile:
             return None
 
     def calculateSize(self):
+        log = getLogger('Tile.calculateSize')
         maxTxl, lineShift = 0, 0
-        if self.texFmt == 0x00 or self.texFmt == 0x40:
+        # fixme what is maxTxl? this whole function is rather mysterious, not sure how/why it works
+        #texFmt 0 2 texSiz 0
+        # RGBA CI 4b
+        if (self.texFmt == 0 or self.texFmt == 2) and self.texSiz == 0:
             maxTxl = 4096
             lineShift = 4
-        elif self.texFmt == 0x60 or self.texFmt == 0x80:
+        # texFmt 3 4 texSiz 0
+        # IA I 4b
+        elif (self.texFmt == 3 or self.texFmt == 4) and self.texSiz == 0:
             maxTxl = 8192
             lineShift = 4
-        elif self.texFmt == 0x08 or self.texFmt == 0x48:
+        # texFmt 0 2 texSiz 1
+        # RGBA CI 8b
+        elif (self.texFmt == 0 or self.texFmt == 2) and self.texSiz == 1:
             maxTxl = 2048
             lineShift = 3
-        elif self.texFmt == 0x68 or self.texFmt == 0x88:
+        # texFmt 3 4 texSiz 1
+        # IA I 8b
+        elif (self.texFmt == 3 or self.texFmt == 4) and self.texSiz == 1:
             maxTxl = 4096
             lineShift = 3
-        elif self.texFmt == 0x10 or self.texFmt == 0x70:
+        # texFmt 0 3 texSiz 2
+        # RGBA IA 16b
+        elif (self.texFmt == 0 or self.texFmt == 3) and self.texSiz == 2:
             maxTxl = 2048
             lineShift = 2
-        elif self.texFmt == 0x50 or self.texFmt == 0x90:
+        # texFmt 2 4 texSiz 2
+        # CI I 16b
+        elif (self.texFmt == 2 or self.texFmt == 4) and self.texSiz == 2:
             maxTxl = 2048
             lineShift = 0
-        elif self.texFmt == 0x18:
+        # texFmt 0 texSiz 3
+        # RGBA 32b
+        elif self.texFmt == 0 and self.texSiz == 3:
             maxTxl = 1024
             lineShift = 2
         else:
-            log.warning('Unknown size for texture %s with format 0x%02X' % (self.current_texture_file_path, self.texFmt))
+            log.warning('Unknown format for texture %s texFmt %d texSiz %d', self.current_texture_file_path, self.texFmt, self.texSiz)
         lineWidth = self.lineSize << lineShift
         self.lineSize = lineWidth
         tileWidth = self.rect.z - self.rect.x + 1
@@ -292,27 +350,21 @@ class Tile:
             self.ratio.y /= 2
         self.offset.y = 1.0 + self.rect.y
 
-    def writePalette(self, file, segment):
+    def writePalette(self, file, segment, palSize):
         log = getLogger('Tile.writePalette')
-        if self.texFmt == 0x40:
-            palSize = 16
-        else:
-            palSize = 256
-        if not validOffset(segment, self.palette + int(palSize * 2) - 1):
-            log.error('Segment offsets 0x%X-0x%X are invalid, writing black palette to %s (has the segment data been loaded?)' % (self.palette, self.palette + int(palSize * 2) - 1, self.current_texture_file_path))
-            for i in range(256):
+        if not validOffset(segment, self.palette + palSize * 2 - 1):
+            log.error('Segment offsets 0x%X-0x%X are invalid, writing black palette to %s (has the segment data been loaded?)' % (self.palette, self.palette + palSize * 2 - 1, self.current_texture_file_path))
+            for i in range(palSize):
                 file.write(pack("L", 0))
             return
         seg, offset = splitOffset(self.palette)
-        for i in range(256):
-            if i < palSize:
-                color = unpack_from(">H", segment[seg], offset + (i << 1))[0]
-                r = int(8 * ((color >> 11) & 0x1F))
-                g = int(8 * ((color >> 6) & 0x1F))
-                b = int(8 * ((color >> 1) & 0x1F))
-                file.write(pack("BBB", b, g, r))
-            else:
-                file.write(pack("BBB", 0, 0, 0))
+        for i in range(palSize):
+            color = unpack_from(">H", segment[seg], offset + i * 2)[0]
+            r = int(255/31 * ((color >> 11) & 0b11111))
+            g = int(255/31 * ((color >> 6) & 0b11111))
+            b = int(255/31 * ((color >> 1) & 0b11111))
+            a = 255 * (color & 1)
+            file.write(pack("BBBB", b, g, r, a))
 
     def writeImageData(self, file, segment, fy=False, df=False):
         log = getLogger('Tile.writeImageData')
@@ -320,27 +372,33 @@ class Tile:
             dir = (0, self.rHeight, 1)
         else:
             dir = (self.rHeight - 1, -1, -1)
-        if self.texFmt in (0x40, 0x60, 0x80, 0x90):
-            bpp = 0.5
-        elif self.texFmt in (0x00, 0x08, 0x10, 0x70):
-            bpp = 2
-        elif self.texFmt in (0x48, 0x50, 0x68, 0x88):
-            bpp = 1
-        elif self.texFmt in (0x18,):
-            bpp = 4
+        if self.texSiz <= 3:
+            bpp = (0.5,1,2,4)[self.texSiz] # bytes (not bits) per pixel
         else:
-            log.warning('Unknown texture format 0x%02X for texture %s' % (self.texFmt, self.current_texture_file_path))
+            log.warning('Unknown texSiz %d for texture %s, defaulting to 4 bytes per pixel' % (self.texSiz, self.current_texture_file_path))
             bpp = 4
         lineSize = self.rWidth * bpp
+        writeFallbackData = False
         if not validOffset(segment, self.data + int(self.rHeight * lineSize) - 1):
             log.error('Segment offsets 0x%X-0x%X are invalid, writing default fallback colors to %s (has the segment data been loaded?)' % (self.data, self.data + int(self.rHeight * lineSize) - 1, self.current_texture_file_path))
+            writeFallbackData = True
+        if (self.texFmt,self.texSiz) not in (
+            (0,2), (0,3), # RGBA16, RGBA32
+            #(1,-1), # YUV ? "not used in z64 games"
+            (2,0), (2,1), # CI4, CI8
+            (3,0), (3,1), (3,2), # IA4, IA8, IA16
+            (4,0), (4,1), # I4, I8
+        ):
+            log.error('Unknown fmt/siz combination %d/%d (%s?)', self.texFmt, self.texSiz, self.getFormatName())
+            writeFallbackData = True
+        if writeFallbackData:
             size = self.rWidth * self.rHeight
             if int(self.clip.x) & 1 != 0 and replicateTexMirrorBlender:
                 size *= 2
             if int(self.clip.y) & 1 != 0 and replicateTexMirrorBlender:
                 size *= 2
             for i in range(size):
-                if self.texFmt == 0x40 or self.texFmt == 0x48 or self.texFmt == 0x50:
+                if self.texFmt == 2: # CI (paletted)
                     file.write(pack("B", 0))
                 else:
                     file.write(pack(">L", 0x000000FF))
@@ -351,77 +409,67 @@ class Tile:
             line = []
             j = 0
             while j < int(self.rWidth * bpp):
-                if bpp < 2:
+                if bpp < 2: # 0.5, 1
                     color = unpack_from("B", segment[seg], off + int(floor(j)))[0]
+                    if bpp == 0.5:
+                        color = ((color >> 4) if j % 1 == 0 else color) & 0xF
                 elif bpp == 2:
                     color = unpack_from(">H", segment[seg], off + j)[0]
-                else:
+                else: # 4
                     color = unpack_from(">L", segment[seg], off + j)[0]
-                if self.texFmt == 0x40:
-                    if floor(j) == j:
-                        a = color >> 4
+                if self.texFmt == 0: # RGBA
+                    if self.texSiz == 2: # RGBA16
+                        r = ((color >> 11) & 0b11111) * 255 // 31
+                        g = ((color >> 6) & 0b11111) * 255 // 31
+                        b = ((color >> 1) & 0b11111) * 255 // 31
+                        a = (color & 1) * 255
+                    elif self.texSiz == 3: # RGBA32
+                        r = (color >> 24) & 0xFF
+                        g = (color >> 16) & 0xFF
+                        b = (color >> 8) & 0xFF
+                        a = color & 0xFF
+                elif self.texFmt == 2: # CI
+                    if self.texSiz == 0: # CI4
+                        p = color
+                    elif self.texSiz == 1: # CI8
+                        p = color
+                elif self.texFmt == 3: # IA
+                    if self.texSiz == 0: # IA4
+                        r = g = b = (color >> 1) * 255 // 7
+                        a = (color & 1) * 255
+                    elif self.texSiz == 1: # IA8
+                        r = g = b = (color >> 4) * 255 // 15
+                        a = (color & 0xF) * 255 // 15
+                    elif self.texSiz == 1: # IA16
+                        r = g = b = color >> 8
+                        a = color & 0xFF
+                elif self.texFmt == 4: # I
+                    if self.texSiz == 0: # I4
+                        r = g = b = a = color * 255 // 15
+                    elif self.texSiz == 1: # I8
+                        r = g = b = a = color
+                try:
+                    if self.texFmt == 2: # CI
+                        line.append(p)
                     else:
-                        a = color & 0x0F
-                # IA4
-                elif self.texFmt == 0x60:
-                    if floor(j) == j:
-                        color = color >> 4
-                    r = int(((color >> 1) & 0b111) * 255 / 7)
-                    g = r
-                    b = r
-                    a = 255 if color & 1 else 0
-                elif self.texFmt == 0x48 or self.texFmt == 0x50:
-                    a = color
-                elif self.texFmt == 0x00 or self.texFmt == 0x08 or self.texFmt == 0x10:
-                    r = int(8 * ((color >> 11) & 0x1F))
-                    g = int(8 * ((color >> 6) & 0x1F))
-                    b = int(8 * ((color >> 1) & 0x1F))
-                    a = int(255 * (color & 0x01))
-                elif self.texFmt == 0x80:
-                    if floor(j) == j:
-                        r = int(16 * (color >> 4))
-                    else:
-                        r = int(16 * (color & 0x0F))
-                    g = r
-                    b = g
-                    a = 0xFF
-                elif self.texFmt == 0x88:
-                    r = color
-                    g = r
-                    b = g
-                    a = 0xFF
-                elif self.texFmt == 0x68:
-                    r = int(16 * (color >> 4))
-                    g = r
-                    b = g
-                    a = int(16 * (color & 0x0F))
-                elif self.texFmt == 0x70:
-                    r = color >> 8
-                    g = r
-                    b = g
-                    a = color & 0xFF
-                elif self.texFmt == 0x18:
-                    r = color >> 24
-                    g = (color >> 16) & 0xFF
-                    b = (color >> 8) & 0xFF
-                    a = color & 0xFF
-                else:
-                    r = 0
-                    g = 0
-                    b = 0
-                    a = 0xFF
+                        line.append((b << 24) | (g << 16) | (r << 8) | a)
+                except UnboundLocalError:
+                    log.error('Unknown format texFmt %d texSiz %d', self.texFmt, self.texSiz)
+                    raise
+                """
                 if self.texFmt == 0x40 or self.texFmt == 0x48 or self.texFmt == 0x50:
                     line.append(a)
                 else:
                     line.append((b << 24) | (g << 16) | (r << 8) | a)
+                """
                 j += bpp
-            if self.texFmt == 0x40 or self.texFmt == 0x48 or self.texFmt == 0x50:
+            if self.texFmt == 2: # CI # in (0x40, 0x48, 0x50):
                 file.write(pack("B" * len(line), *line))
             else:
                 file.write(pack(">" + "L" * len(line), *line))
             if int(self.clip.x) & 1 != 0 and replicateTexMirrorBlender:
                 line.reverse()
-                if self.texFmt == 0x40 or self.texFmt == 0x48 or self.texFmt == 0x50:
+                if self.texFmt == 2: # CI # in (0x40, 0x48, 0x50):
                     file.write(pack("B" * len(line), *line))
                 else:
                     file.write(pack(">" + "L" * len(line), *line))
@@ -453,14 +501,14 @@ class Vertex:
         self.pos *= scaleFactor
         self.uv.x = float(unpack_from(">h", segment[seg], offset + 8)[0])
         self.uv.y = float(unpack_from(">h", segment[seg], offset + 10)[0])
-        self.normal.x = 0.00781250 * unpack_from("b", segment[seg], offset + 12)[0]
-        self.normal.z = 0.00781250 * unpack_from("b", segment[seg], offset + 13)[0]
-        self.normal.y = 0.00781250 * unpack_from("b", segment[seg], offset + 14)[0]
-        self.color[0] = min(0.00392157 * segment[seg][offset + 12], 1.0)
-        self.color[1] = min(0.00392157 * segment[seg][offset + 13], 1.0)
-        self.color[2] = min(0.00392157 * segment[seg][offset + 14], 1.0)
+        self.normal.x = unpack_from("b", segment[seg], offset + 12)[0] / 128
+        self.normal.z = unpack_from("b", segment[seg], offset + 13)[0] / 128
+        self.normal.y = -unpack_from("b", segment[seg], offset + 14)[0] / 128
+        self.color[0] = min(segment[seg][offset + 12] / 255, 1.0)
+        self.color[1] = min(segment[seg][offset + 13] / 255, 1.0)
+        self.color[2] = min(segment[seg][offset + 14] / 255, 1.0)
         if checkUseVertexAlpha():
-            self.color[3] = min(0.00392157 * segment[seg][offset + 15], 1.0)
+            self.color[3] = min(segment[seg][offset + 15] / 255, 1.0)
 
 
 class Mesh:
@@ -471,14 +519,18 @@ class Mesh:
         # import normals
         self.normals = []
 
-    def create(self, hierarchy, offset):
+    def create(self, name_format, hierarchy, offset, use_normals):
         log = getLogger('Mesh.create')
         if len(self.faces) == 0:
             log.trace('Skipping empty mesh %08X', offset)
+            if self.verts:
+                log.warning('Discarding unused vertices, no faces')
             return
         log.trace('Creating mesh %08X', offset)
-        me = bpy.data.meshes.new("me_%08X" % offset)
-        ob = bpy.data.objects.new("ob_%08X" % offset, me)
+
+        me_name = name_format % ('me_%08X' % offset)
+        me = bpy.data.meshes.new(me_name)
+        ob = bpy.data.objects.new(name_format % ('ob_%08X' % offset), me)
         bpy.context.scene.objects.link(ob)
         bpy.context.scene.objects.active = ob
         me.vertices.add(len(self.verts))
@@ -491,37 +543,40 @@ class Mesh:
             me.tessfaces[i].vertices = self.faces[i]
             me.tessfaces[i].use_smooth = self.faces_use_smooth[i]
 
-            vcd[i].color1 = self.colors[i * 3 + 2]
+            vcd[i].color1 = self.colors[i * 3]
             vcd[i].color2 = self.colors[i * 3 + 1]
-            vcd[i].color3 = self.colors[i * 3]
+            vcd[i].color3 = self.colors[i * 3 + 2]
         uvd = me.tessface_uv_textures.new().data
         for i in range(len(self.faces)):
-            if self.uvs[i * 4 + 3]:
-                if not self.uvs[i * 4 + 3].name in me.materials:
-                    me.materials.append(self.uvs[i * 4 + 3])
-                uvd[i].image = self.uvs[i * 4 + 3].texture_slots[0].texture.image
-            uvd[i].uv[0] = self.uvs[i * 4 + 2]
-            uvd[i].uv[1] = self.uvs[i * 4 + 1]
-            uvd[i].uv[2] = self.uvs[i * 4]
+            material = self.uvs[i * 4]
+            if material:
+                if not material.name in me.materials:
+                    me.materials.append(material)
+                uvd[i].image = material.texture_slots[0].texture.image
+            uvd[i].uv[0] = self.uvs[i * 4 + 1]
+            uvd[i].uv[1] = self.uvs[i * 4 + 2]
+            uvd[i].uv[2] = self.uvs[i * 4 + 3]
         me.calc_normals()
         me.validate()
         me.update()
-        # todo import normals (saving them in blender is the weird part)
-        """
-        # doesn't work, blender eventually automatically recalculates normals
-        for i in range(len(self.verts)):
-            print(i)
-            print(self.normals[i])
-            me.vertices[i].normal = self.normals[i]
-            print(me.vertices[i].normal)
-        """
-        """
-        # https://blender.stackexchange.com/questions/104650/there-is-a-way-to-add-custom-split-normal-use-python-api/104664#104664
-         # this does set normals in a way that would carry through to oot
-        # however it seems like removing double vertices ruins most of it
-        me.normals_split_custom_set([(0, 0, 0) for l in me.loops])
-        me.normals_split_custom_set_from_vertices(self.normals)
-        """
+
+        log.debug('me =\n%r', me)
+        log.debug('verts =\n%r', self.verts)
+        log.debug('faces =\n%r', self.faces)
+        log.debug('normals =\n%r', self.normals)
+
+        if use_normals:
+            # fixme make sure normals are set in the right order
+            # fixme duplicate faces make normal count not the loop count
+            loop_normals = []
+            for face_normals in self.normals:
+                loop_normals.extend(n for vi,n in face_normals)
+            me.use_auto_smooth = True
+            try:
+                me.normals_split_custom_set(loop_normals)
+            except:
+                log.exception('normals_split_custom_set failed, known issue due to duplicate faces')
+
         if hierarchy:
             for name, vgroup in self.vgroups.items():
                 grp = ob.vertex_groups.new(name)
@@ -564,7 +619,7 @@ class Limb:
         self.poseLoc.x = unpack_from(">h", segment[seg], rot_offset)[0]
         self.poseLoc.z = unpack_from(">h", segment[seg], rot_offset + 2)[0]
         self.poseLoc.y = unpack_from(">h", segment[seg], rot_offset + 4)[0]
-        getLogger('Limb.read').trace("      Limb %r: %f,%f,%f", (actuallimb, self.poseLoc.x, self.poseLoc.z, self.poseLoc.y))
+        getLogger('Limb.read').trace("      Limb %r: %f,%f,%f", actuallimb, self.poseLoc.x, self.poseLoc.z, self.poseLoc.y)
 
 class Hierarchy:
     def __init__(self):
@@ -654,8 +709,10 @@ class Hierarchy:
 
 class F3DZEX:
     def __init__(self):
+        self.use_transparency = detectedDisplayLists_use_transparency
+        self.alreadyRead = []
         self.segment, self.vbuf, self.tile  = [], [], []
-        self.geometryModeFlags = None
+        self.geometryModeFlags = set()
 
         self.animTotal = 0
         self.TimeLine = 0
@@ -663,6 +720,7 @@ class F3DZEX:
         self.displaylists = []
 
         for i in range(16):
+            self.alreadyRead.append([])
             self.segment.append([])
             self.vbuf.append(Vertex())
         for i in range(2):
@@ -677,14 +735,17 @@ class F3DZEX:
 
     def loaddisplaylists(self, path):
         log = getLogger('F3DZEX.loaddisplaylists')
+        if not os.path.isfile(path):
+            log.info('Did not find %s (use to manually set offsets of display lists to import)', path)
+            self.displaylists = []
+            return
         try:
-             file = open(path, 'rb')
-             self.displaylists = file.readlines()
-             file.close()
-             log.info("Loaded the display list list successfully!")
+            file = open(path)
+            self.displaylists = file.readlines()
+            file.close()
+            log.info("Loaded the display list list successfully!")
         except:
-             log.info("Did not find displaylists.txt!")
-             pass
+            log.exception('Could not read displaylists.txt')
 
     def loadSegment(self, seg, path):
         try:
@@ -796,41 +857,99 @@ class F3DZEX:
             self.buildLinkAnimations(self.hierarchy[0], 0)
 
     def importMap(self):
-        log = getLogger('F3DZEX.importMap')
+        if importStrategy == 'NO_DETECTION':
+            self.importMapWithHeaders()
+        elif importStrategy == 'BRUTEFORCE':
+            self.searchAndImport(3, False)
+        elif importStrategy == 'SMART':
+            self.importMapWithHeaders()
+            self.searchAndImport(3, True)
+        elif importStrategy == 'TRY_EVERYTHING':
+            self.importMapWithHeaders()
+            self.searchAndImport(3, False)
+
+    def importMapWithHeaders(self):
+        log = getLogger('F3DZEX.importMapWithHeaders')
         data = self.segment[0x03]
         for i in range(0, len(data), 8):
-            if (data[i] == 0x0A and data[i+4] == 0x03):
+            if data[i] == 0x0A:
+                mapHeaderSegment = data[i+4]
+                if mapHeaderSegment != 0x03:
+                    log.warning('Skipping map header located in segment 0x%02X, referenced by command at 0x%X', mapHeaderSegment, i)
+                    continue
+                # mesh header offset 
                 mho = (data[i+5] << 16) | (data[i+6] << 8) | data[i+7]
-                if (mho < len(data)):
-                    type = data[mho]
+                if not mho < len(data):
+                    log.error('Mesh header offset 0x%X is past the zmap file size, skipping', mho)
+                    continue
+                type = data[mho]
+                log.info("            Mesh Type: %d" % type)
+                if type == 0:
+                    if mho + 12 > len(data):
+                        log.error('Mesh header at 0x%X of type %d extends past the zmap file size, skipping', mho, type)
+                        continue
                     count = data[mho+1]
-                    seg = data[mho+4]
+                    startSeg = data[mho+4]
                     start = (data[mho+5] << 16) | (data[mho+6] << 8) | data[mho+7]
+                    endSeg = data[mho+8]
                     end = (data[mho+9] << 16) | (data[mho+10] << 8) | data[mho+11]
-                    log.info("            Mesh Type: %02X" % type)
-                    if (data[mho+4] == 0x03 and start < end and end < len(data)):
-                        log.info("            start %08X" % start)
-                        log.info("            end %08X" % end)
-                        if (type == 0):
-                            for j in range(start, end, 4):
-                                self.buildDisplayList(None, [None], unpack_from(">L", data, j)[0], False)
-                        elif (type == 1 and count == 1):
-                            #Noka here
-                            end = start + 8
-                            for j in range(start, end, 4):
-                                self.buildDisplayList(None, [None], unpack_from(">L", data, j)[0], False)
-                        elif (type == 2):
-                            for j in range(start, end, 16):
-                                near = (data[j+8] << 24)|(data[j+9] << 16)|(data[j+10] << 8)|data[j+11]
-                                far = (data[j+12] << 24)|(data[j+13] << 16)|(data[j+14] << 8)|data[j+15]
-                                if (near != 0):
-                                    self.buildDisplayList(None, [None], near, False)
-                                elif (far != 0):
-                                    self.buildDisplayList(None, [None], far, False)
-                return
+                    if startSeg != endSeg:
+                        log.error('Mesh header at 0x%X of type %d has start and end in different segments 0x%02X and 0x%02X, skipping', mho, type, startSeg, endSeg)
+                        continue
+                    if startSeg != 0x03:
+                        log.error('Skipping mesh header at 0x%X of type %d: entries are in segment 0x%02X', mho, type, startSeg)
+                        continue
+                    log.info('Reading %d display lists from 0x%X to 0x%X', count, start, end)
+                    for j in range(start, end, 8):
+                        opa = unpack_from(">L", data, j)[0]
+                        if opa:
+                            self.use_transparency = False
+                            self.buildDisplayList(None, [None], opa, mesh_name_format='%s_opa')
+                        xlu = unpack_from(">L", data, j+4)[0]
+                        if xlu:
+                            self.use_transparency = True
+                            self.buildDisplayList(None, [None], xlu, mesh_name_format='%s_xlu')
+                elif type == 1:
+                    log.error('mesh type 1 unimplemented')
+                    continue
+                    # fixme
+                    
+                    if count == 1:
+                        #Noka here
+                        end = start + 8
+                        for j in range(start, end, 4):
+                            self.buildDisplayList(None, [None], unpack_from(">L", data, j)[0])
+                    
+                elif type == 2:
+                    if mho + 12 > len(data):
+                        log.error('Mesh header at 0x%X of type %d extends past the zmap file size, skipping', mho, type)
+                        continue
+                    count = data[mho+1]
+                    startSeg = data[mho+4]
+                    start = (data[mho+5] << 16) | (data[mho+6] << 8) | data[mho+7]
+                    endSeg = data[mho+8]
+                    end = (data[mho+9] << 16) | (data[mho+10] << 8) | data[mho+11]
+                    if startSeg != endSeg:
+                        log.error('Mesh header at 0x%X of type %d has start and end in different segments 0x%02X and 0x%02X, skipping', mho, type, startSeg, endSeg)
+                        continue
+                    if startSeg != 0x03:
+                        log.error('Skipping mesh header at 0x%X of type %d: entries are in segment 0x%02X', mho, type, startSeg)
+                        continue
+                    log.info('Reading %d display lists from 0x%X to 0x%X', count, start, end)
+                    for j in range(start, end, 16):
+                        opa = unpack_from(">L", data, j+8)[0]
+                        if opa:
+                            self.use_transparency = False
+                            self.buildDisplayList(None, [None], opa, mesh_name_format='%s_opa')
+                        xlu = unpack_from(">L", data, j+12)[0]
+                        if xlu:
+                            self.use_transparency = True
+                            self.buildDisplayList(None, [None], xlu, mesh_name_format='%s_xlu')
+                else:
+                    log.error('Unknown mesh type %d in mesh header at 0x%X', type, mho)
             elif (data[i] == 0x14):
-                break
-        log.error("ERROR:  Map header not found")
+                return
+        log.warning('Map headers ended unexpectedly')
 
     def importObj(self):
         log = getLogger('F3DZEX.importObj')
@@ -841,10 +960,22 @@ class F3DZEX:
             log.info("Found zilch. Using display lists, then...")
             if len(self.displaylists) == 0:
                 log.info("...but none were found...")
-            for dll in self.displaylists:
-                s = dll.decode("utf-8")
-                self.buildDisplayList(None, 0, int(s, 0), True)
-            return
+            for offsetStr in self.displaylists:
+                while offsetStr and offsetStr[-1] in ('\r','\n'):
+                    offsetStr = offsetStr[:-1]
+                if re.match(r'^[0-9]+$', offsetStr):
+                    log.warning('Reading offset %s as hexadecimal, NOT decimal', offsetStr)
+                if len(offsetStr) > 2 and offsetStr[:2] == '0x':
+                    offsetStr = offsetStr[2:]
+                try:
+                    offset = int(offsetStr, 16)
+                except ValueError:
+                    log.error('Could not parse %s from displaylists.txt as hexadecimal, skipping entry', offsetStr)
+                    continue
+                if (offset & 0xFF000000) == 0:
+                    log.info('Defaulting segment for offset 0x%X to 6', offset)
+                    offset |= 0x06000000
+                self.buildDisplayList(None, 0, offset)
 
         for hierarchy in self.hierarchy:
             log.info("Building hierarchy '%s'..." % hierarchy.name)
@@ -855,7 +986,7 @@ class F3DZEX:
                     if validOffset(self.segment, limb.near):
                         log.info("    0x%02X : building display lists..." % i)
                         self.resetCombiner()
-                        self.buildDisplayList(hierarchy, limb, limb.near, False)
+                        self.buildDisplayList(hierarchy, limb, limb.near)
                     else:
                         log.info("    0x%02X : out of range" % i)
                 else:
@@ -899,6 +1030,49 @@ class F3DZEX:
             else:
                 log.info("    Load anims OFF.")
 
+        if importStrategy == 'NO_DETECTION':
+            pass
+        elif importStrategy == 'BRUTEFORCE':
+            self.searchAndImport(6, False)
+        elif importStrategy == 'SMART':
+            self.searchAndImport(6, True)
+        elif importStrategy == 'TRY_EVERYTHING':
+            self.searchAndImport(6, False)
+
+    def searchAndImport(self, segment, skipAlreadyRead):
+        log = getLogger('F3DZEX.searchAndImport')
+        data = self.segment[segment]
+        self.use_transparency = detectedDisplayLists_use_transparency
+        log.info(
+            'Searching for %s display lists in segment 0x%02X (materials with transparency: %s)',
+            'non-read' if skipAlreadyRead else 'any', segment, 'yes' if self.use_transparency else 'no')
+        validOpcodesStartIndex = 0
+        for i in range(0, len(data), 8):
+            opcode = data[i]
+            # valid commands are 0x00-0x07 and 0xD3-0xFF
+            # however, could be not considered valid:
+            # 0x07 G_QUAD
+            # 0xEC G_SETCONVERT (YUV-related)
+            # 0xE4 G_TEXRECT, 0xF6 G_FILLRECT (2d overlay)
+            # 0xEB, 0xEE, 0xEF, 0xF1 ("unimplemented -> rarely used" being the reasoning)
+            # but filtering out those hurts the resulting import
+            isValid = (opcode <= 0x07 or opcode >= 0xD3) #and opcode not in (0x07,0xEC,0xE4,0xF6,0xEB,0xEE,0xEF,0xF1)
+            if not isValid:
+                validOpcodesStartIndex = None
+            elif validOpcodesStartIndex is None:
+                validOpcodesStartIndex = i
+            # if this command means "end of dlist"
+            if (opcode == 0xDE and data[i+1] != 0) or opcode == 0xDF:
+                # build starting at earliest valid opcode
+                log.debug('Found opcode 0x%X at 0x%X, building display list from 0x%X', opcode, i, validOpcodesStartIndex)
+                self.buildDisplayList(
+                    None, [None], (segment << 24) | validOpcodesStartIndex,
+                    mesh_name_format = '%s_detect',
+                    skipAlreadyRead = skipAlreadyRead,
+                    extraLenient = True
+                )
+                validOpcodesStartIndex = None
+
     def resetCombiner(self):
         self.primColor = Vector([1.0, 1.0, 1.0, 1.0])
         self.envColor = Vector([1.0, 1.0, 1.0, 1.0])
@@ -907,6 +1081,9 @@ class F3DZEX:
         else:
             self.vertexColor = Vector([1.0, 1.0, 1.0])
         self.shadeColor = Vector([1.0, 1.0, 1.0])
+
+    def checkUseNormals(self):
+        return vertexMode == 'NORMALS' or (vertexMode == 'AUTO' and 'G_LIGHTING' in self.geometryModeFlags)
 
     def getCombinerColor(self):
         def mult4d(v1, v2):
@@ -920,19 +1097,35 @@ class F3DZEX:
         # todo assume G_LIGHTING means normals if set, and colors if clear, but G_SHADE may play a role too?
         if vertexMode == 'COLORS' or (vertexMode == 'AUTO' and 'G_LIGHTING' not in self.geometryModeFlags):
             cc = mult4d(cc, self.vertexColor.to_4d())
-        elif vertexMode == 'NORMALS' or (vertexMode == 'AUTO' and 'G_LIGHTING' in self.geometryModeFlags):
+        elif self.checkUseNormals():
             cc = mult4d(cc, self.shadeColor.to_4d())
         if checkUseVertexAlpha():
             return cc
         else:
             return cc.xyz
 
-    def buildDisplayList(self, hierarchy, limb, offset, static):
+    def buildDisplayList(self, hierarchy, limb, offset, mesh_name_format='%s', skipAlreadyRead=False, extraLenient=False):
         log = getLogger('F3DZEX.buildDisplayList')
-        if static:
-            data = self.segment[0x6]
-        else:
-            data = self.segment[offset >> 24]
+        segment = offset >> 24
+        segmentMask = segment << 24
+        data = self.segment[segment]
+
+        startOffset = offset & 0x00FFFFFF
+        endOffset = len(data)
+        if skipAlreadyRead:
+            log.trace('is 0x%X in %r ?', startOffset, self.alreadyRead[segment])
+            for fromOffset,toOffset in self.alreadyRead[segment]:
+                if fromOffset <= startOffset and startOffset <= toOffset:
+                    log.debug('Skipping already read dlist at 0x%X', startOffset)
+                    return
+                if startOffset <= fromOffset:
+                    if endOffset > fromOffset:
+                        endOffset = fromOffset
+                        log.debug('Shortening dlist to end at most at 0x%X, at which point it was read already', endOffset)
+            log.trace('no it is not')
+
+        def buildRec(offset):
+            self.buildDisplayList(hierarchy, limb, offset, mesh_name_format=mesh_name_format, skipAlreadyRead=skipAlreadyRead)
 
         mesh = Mesh()
         has_tex = False
@@ -941,14 +1134,15 @@ class F3DZEX:
             matrix = [limb]
         else:
             matrix = [None]
-        if self.geometryModeFlags is None:
-            self.geometryModeFlags = set()
-        
-        log.debug('Reading dlists from 0x%08X', offset)
-        for i in range(offset & 0x00FFFFFF, len(data), 8):
+
+        log.debug('Reading dlists from 0x%08X', segmentMask | startOffset)
+        for i in range(startOffset, endOffset, 8):
             w0 = unpack_from(">L", data, i)[0]
             w1 = unpack_from(">L", data, i + 4)[0]
-            if data[i] == 0x01:
+            # G_NOOP
+            if data[i] == 0x00:
+                pass
+            elif data[i] == 0x01:
                 count = (w0 >> 12) & 0xFF
                 index = ((w0 & 0xFF) >> 1) - count
                 vaddr = w1
@@ -960,15 +1154,19 @@ class F3DZEX:
                             if self.vbuf[index + j].limb:
                                 self.vbuf[index + j].pos += self.vbuf[index + j].limb.pos
             elif data[i] == 0x02:
-                index = ((data[i + 2] & 0x0F) << 3) | (data[i + 3] >> 1)
-                if data[i + 1] == 0x10:
-                    self.vbuf[index].normal.x = 0.00781250 * unpack_from("b", data, i + 4)[0]
-                    self.vbuf[index].normal.z = 0.00781250 * unpack_from("b", data, i + 5)[0]
-                    self.vbuf[index].normal.y = 0.00781250 * unpack_from("b", data, i + 6)[0]
-                    self.vbuf[index].color = 0.00392157 * unpack_from("BBBB", data, i + 4)[0]
-                elif data[i + 1] == 0x14:
-                    self.vbuf[index].uv.x = float(unpack_from(">h", data, i + 4)[0])
-                    self.vbuf[index].uv.y = float(unpack_from(">h", data, i + 6)[0])
+                try:
+                    index = ((data[i + 2] & 0x0F) << 3) | (data[i + 3] >> 1)
+                    if data[i + 1] == 0x10:
+                        self.vbuf[index].normal.x = unpack_from("b", data, i + 4)[0] / 128
+                        self.vbuf[index].normal.z = unpack_from("b", data, i + 5)[0] / 128
+                        self.vbuf[index].normal.y = -unpack_from("b", data, i + 6)[0] / 128
+                        self.vbuf[index].color = unpack_from("BBBB", data, i + 4)[0] / 255
+                    elif data[i + 1] == 0x14:
+                        self.vbuf[index].uv.x = float(unpack_from(">h", data, i + 4)[0])
+                        self.vbuf[index].uv.y = float(unpack_from(">h", data, i + 6)[0])
+                except IndexError:
+                    if not extraLenient:
+                        log.exception('Bad vertex indices in 0x02 at 0x%X %08X %08X', i, w0, w1)
             elif data[i] == 0x05 or data[i] == 0x06:
                 if has_tex:
                     material = None
@@ -977,7 +1175,7 @@ class F3DZEX:
                             material = self.material[j]
                             break
                     if material == None:
-                        material = self.tile[0].create(self.segment)
+                        material = self.tile[0].create(self.segment, self.use_transparency)
                         if material:
                             self.material.append(material)
                     has_tex = False
@@ -985,80 +1183,66 @@ class F3DZEX:
                 vi1, vi2 = -1, -1
                 if not importTextures:
                     material = None
-                count = 0
+                nbefore_props = ['verts','uvs','colors','vgroups','faces','faces_use_smooth','normals']
+                nbefore_lengths = [(nbefore_prop, len(getattr(mesh, nbefore_prop))) for nbefore_prop in nbefore_props]
+                # a1 a2 a3 are microcode values
+                def addTri(a1, a2, a3):
+                    try:
+                        verts = [self.vbuf[a >> 1] for a in (a1,a2,a3)]
+                    except IndexError:
+                        if extraLenient:
+                            return False
+                        raise
+                    verts_pos = [(v.pos.x, v.pos.y, v.pos.z) for v in verts]
+                    verts_index = [mesh.verts.index(pos) if pos in mesh.verts else None for pos in verts_pos]
+                    for j in range(3):
+                        if verts_index[j] is None:
+                            mesh.verts.append(verts_pos[j])
+                            verts_index[j] = len(mesh.verts) - 1
+                    mesh.uvs.append(material)
+                    face_normals = []
+                    for j in range(3):
+                        v = verts[j]
+                        vi = verts_index[j]
+                        # todo is this computation of shadeColor correct?
+                        sc = (((v.normal.x + v.normal.y + v.normal.z) / 3) + 1.0) / 2
+                        if checkUseVertexAlpha():
+                            self.vertexColor = Vector([v.color[0], v.color[1], v.color[2], v.color[3]])
+                        else:
+                            self.vertexColor = Vector([v.color[0], v.color[1], v.color[2]])
+                        self.shadeColor = Vector([sc, sc, sc])
+                        mesh.colors.append(self.getCombinerColor())
+                        mesh.uvs.append((self.tile[0].offset.x + v.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v.uv.y * self.tile[0].ratio.y))
+                        if hierarchy:
+                            if v.limb:
+                                limb_name = 'limb_%02i' % v.limb.index
+                                if not (limb_name in mesh.vgroups):
+                                    mesh.vgroups[limb_name] = []
+                                mesh.vgroups[limb_name].append(vi)
+                        face_normals.append((vi, (v.normal.x, v.normal.y, v.normal.z)))
+                    mesh.faces.append(tuple(verts_index))
+                    mesh.faces_use_smooth.append('G_SHADE' in self.geometryModeFlags and 'G_SHADING_SMOOTH' in self.geometryModeFlags)
+                    mesh.normals.append(tuple(face_normals))
+                    if len(set(verts_index)) < 3 and not extraLenient:
+                        log.warning('Found empty tri! %d %d %d' % tuple(verts_index))
+                    return True
+
                 try:
-                    for j in range(1, (data[i] - 4) * 4):
-                        if j != 4:
-                            v3 = self.vbuf[data[i + j] >> 1]
-                            vi3 = -1
-                            for k in range(len(mesh.verts)):
-                                if mesh.verts[k] == (v3.pos.x, v3.pos.y, v3.pos.z):
-                                    vi3 = k
-                                    break
-                            if vi3 == -1:
-                                mesh.verts.append((v3.pos.x, v3.pos.y, v3.pos.z))
-                                # import normals
-                                mesh.normals.append((v3.normal.x, v3.normal.y, v3.normal.z))
-                                vi3 = len(mesh.verts) - 1
-                                count += 1
-                            if j == 1 or j == 5:
-                                v1 = v3
-                                vi1 = vi3
-                            elif j == 2 or j == 6:
-                                v2 = v3
-                                vi2 = vi3
-                            elif j == 3 or j == 7:
-                                sc = (((v3.normal.x + v3.normal.y + v3.normal.z) / 3) + 1.0) / 2
-                                if checkUseVertexAlpha():
-                                    self.vertexColor = Vector([v3.color[0], v3.color[1], v3.color[2], v3.color[3]])
-                                else:
-                                    self.vertexColor = Vector([v3.color[0], v3.color[1], v3.color[2]])
-                                self.shadeColor = Vector([sc, sc, sc])
-                                mesh.colors.append(self.getCombinerColor())
-                                sc = (((v2.normal.x + v2.normal.y + v2.normal.z) / 3) + 1.0) / 2
-                                if checkUseVertexAlpha():
-                                    self.vertexColor = Vector([v2.color[0], v2.color[1], v2.color[2], v2.color[3]])
-                                else:
-                                    self.vertexColor = Vector([v2.color[0], v2.color[1], v2.color[2]])
-                                self.shadeColor = Vector([sc, sc, sc])
-                                mesh.colors.append(self.getCombinerColor())
-                                sc = (((v1.normal.x + v1.normal.y + v1.normal.z) / 3) + 1.0) / 2
-                                if checkUseVertexAlpha():
-                                    self.vertexColor = Vector([v1.color[0], v1.color[1], v1.color[2], v1.color[3]])
-                                else:
-                                    self.vertexColor = Vector([v1.color[0], v1.color[1], v1.color[2]])
-                                self.shadeColor = Vector([sc, sc, sc])
-                                mesh.colors.append(self.getCombinerColor())
-                                mesh.uvs.extend([
-                                    (self.tile[0].offset.x + v3.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v3.uv.y * self.tile[0].ratio.y),
-                                    (self.tile[0].offset.x + v2.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v2.uv.y * self.tile[0].ratio.y),
-                                    (self.tile[0].offset.x + v1.uv.x * self.tile[0].ratio.x, self.tile[0].offset.y - v1.uv.y * self.tile[0].ratio.y),
-                                    material
-                                ])
-                                if hierarchy:
-                                    if v3.limb:
-                                        if not (("limb_%02i" % v3.limb.index) in mesh.vgroups):
-                                            mesh.vgroups["limb_%02i" % v3.limb.index] = []
-                                        mesh.vgroups["limb_%02i" % v3.limb.index].append(vi3)
-                                    if v2.limb:
-                                        if not (("limb_%02i" % v2.limb.index) in mesh.vgroups):
-                                            mesh.vgroups["limb_%02i" % v2.limb.index] = []
-                                        mesh.vgroups["limb_%02i" % v2.limb.index].append(vi2)
-                                    if v1.limb:
-                                        if not (("limb_%02i" % v1.limb.index) in mesh.vgroups):
-                                            mesh.vgroups["limb_%02i" % v1.limb.index] = []
-                                        mesh.vgroups["limb_%02i" % v1.limb.index].append(vi1)
-                                mesh.faces.append((vi1, vi2, vi3))
-                                mesh.faces_use_smooth.append('G_SHADE' in self.geometryModeFlags and 'G_SHADING_SMOOTH' in self.geometryModeFlags)
-                                if vi1==vi2 or vi1==vi3 or vi2==vi3:
-                                     log.warning('Found empty tri! %d %d %d' % (vi1, vi2, vi3))
+                    revert = not addTri(data[i+1], data[i+2], data[i+3])
+                    if data[i] == 0x06:
+                        revert = revert or not addTri(data[i+4+1], data[i+4+2], data[i+4+3])
                 except:
-                    log.exception('Failed to import vertices and normals/vertex colors from 0x%X', i)
-                    # todo this is reverting changes on verts, but mesh.vgroups and mesh.faces were changed too. oversight?
-                    for i in range(count):
-                        mesh.verts.pop()
+                    log.exception('Failed to import vertices and/or their data from 0x%X', i)
+                    revert = True
+                if revert:
+                    # revert any change
+                    for nbefore_prop, nbefore in nbefore_lengths:
+                        val_prop = getattr(mesh, nbefore_prop)
+                        while len(val_prop) > nbefore:
+                            val_prop.pop()
             # G_TEXTURE
             elif data[i] == 0xD7:
+                log.debug('0xD7 G_TEXTURE used, but unimplemented')
                 # fixme ?
 #                for i in range(2):
 #                    if ((w1 >> 16) & 0xFFFF) < 0xFFFF:
@@ -1076,6 +1260,7 @@ class F3DZEX:
                     matrix.pop()
             # G_MTX
             elif data[i] == 0xDA and enableMatrices:
+                log.debug('0xDA G_MTX used, but implementation may be faulty')
                 # fixme this looks super weird, not sure what it's doing either
                 if hierarchy and data[i + 4] == 0x0D:
                     if (data[i + 3] & 0x04) == 0:
@@ -1093,33 +1278,37 @@ class F3DZEX:
                         matrix.append(matrix[len(matrix) - 1])
                 elif hierarchy:
                     log.error("unknown limb %08X %08X" % (w0, w1))
+            # G_DL
             elif data[i] == 0xDE:
-                mesh.create(hierarchy, offset)
+                log.trace('G_DE at 0x%X %08X%08X', segmentMask | i, w0, w1)
+                mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
                 mesh.__init__()
-                offset = (offset >> 24) | i + 8
+                offset = segmentMask | i
                 if validOffset(self.segment, w1):
-                    self.buildDisplayList(hierarchy, limb, w1, False)
+                    buildRec(w1)
                 if data[i + 1] != 0x00:
-                    self.geometryModeFlags = None
+                    self.alreadyRead[segment].append((startOffset,i))
                     return
+            # G_ENDDL
             elif data[i] == 0xDF:
-                mesh.create(hierarchy, offset)
-                self.geometryModeFlags = None
+                log.trace('G_ENDDL at 0x%X %08X%08X', segmentMask | i, w0, w1)
+                mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
+                self.alreadyRead[segment].append((startOffset,i))
                 return
             # handle "LOD dlists"
             elif data[i] == 0xE1:
                 # 4 bytes starting at data[i+8+4] is a distance to check for displaying this dlist
-                mesh.create(hierarchy, offset)
+                mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
                 mesh.__init__()
-                offset = (offset >> 24) | i + 8
+                offset = segmentMask | i
                 if validOffset(self.segment, w1):
-                    self.buildDisplayList(hierarchy, limb, w1, False)
+                    buildRec(w1)
                 else:
                     log.warning('Invalid 0xE1 offset 0x%04X, skipping', w1)
             elif data[i] == 0xE7:
-                mesh.create(hierarchy, offset)
+                mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
                 mesh.__init__()
-                offset = (offset >> 24) | i
+                offset = segmentMask | i
             elif data[i] == 0xF0:
                 self.palSize = ((w1 & 0x00FFF000) >> 13) + 1
             elif data[i] == 0xF2:
@@ -1135,11 +1324,12 @@ class F3DZEX:
                 self.tile[self.curTile].calculateSize()
             # G_LOADTILE, G_TEXRECT, G_SETZIMG, G_SETCIMG (2d "direct" drawing?)
             elif data[i] == 0xF4 or data[i] == 0xE4 or data[i] == 0xFE or data[i] == 0xFF:
-                log.info("%08X : %08X", w0, w1)
+                log.debug('0x%X %08X : %08X', data[i], w0, w1)
+            # G_SETTILE
             elif data[i] == 0xF5:
-                self.tile[self.curTile].texFmt = (w0 >> 16) & 0xFF
-                self.tile[self.curTile].txlSize = (w0 >> 19) & 0x03
-                self.tile[self.curTile].lineSize = (w0 >> 9) & 0x1F
+                self.tile[self.curTile].texFmt = (w0 >> 21) & 0b111
+                self.tile[self.curTile].texSiz = (w0 >> 19) & 0b11
+                self.tile[self.curTile].lineSize = (w0 >> 9) & 0x1FF
                 self.tile[self.curTile].clip.x = (w1 >> 8) & 0x03
                 self.tile[self.curTile].clip.y = (w1 >> 18) & 0x03
                 self.tile[self.curTile].mask.x = (w1 >> 4) & 0x0F
@@ -1184,6 +1374,10 @@ class F3DZEX:
                 pass
             # G_GEOMETRYMODE
             elif data[i] == 0xD9:
+                # todo do not push mesh if geometry mode doesnt actually change?
+                mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
+                mesh.__init__()
+                offset = segmentMask | i
                 # https://wiki.cloudmodding.com/oot/F3DZEX#RSP_Geometry_Mode
                 # todo SharpOcarina tags
                 geometryModeMasks = {
@@ -1221,8 +1415,8 @@ class F3DZEX:
                 pass # todo
             else:
                 log.warning('Skipped (unimplemented) opcode 0x%02X' % data[i])
-        log.warning('Reached end of dlist started at 0x%X', offset)
-        self.geometryModeFlags = None
+        log.warning('Reached end of dlist started at 0x%X', startOffset)
+        self.alreadyRead[segment].append((startOffset,endOffset))
 
     def LinkTpose(self, hierarchy):
         log = getLogger('F3DZEX.LinkTpose')
@@ -1611,6 +1805,13 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
     loadOtherSegments = BoolProperty(name="Load Data From Other Segments",
                                     description="Load data from other segments",
                                     default=True,)
+    importStrategy = EnumProperty(name='Detect DLists',
+                                 items=(('NO_DETECTION', 'Minimum', 'Maps: only use headers\nObjects: only use hierarchies\nOnly this option will not create unexpected geometry'),
+                                        ('BRUTEFORCE', 'Bruteforce', 'Try to import everything that looks like a display list\n(ignores header for maps)'),
+                                        ('SMART', 'Smart-ish', 'Minimum + Bruteforce but avoids reading the same display lists several times'),
+                                        ('TRY_EVERYTHING', 'Try everything', 'Minimum + Bruteforce'),),
+                                 description='How to find display lists to import (try this if there is missing geometry)',
+                                 default='NO_DETECTION',)
     vertexMode = EnumProperty(name="Vtx Mode",
                              items=(('COLORS', "COLORS", "Use vertex colors"),
                                     ('NORMALS', "NORMALS", "Use vertex normals as shading"),
@@ -1624,6 +1825,9 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
     enableMatrices = BoolProperty(name="Matrices",
                                  description="Use 0xDA G_MTX and 0xD8 G_POPMTX commands",
                                  default=True,)
+    detectedDisplayLists_use_transparency = BoolProperty(name="Default to transparency",
+                                                         description="Set material to use transparency or not for display lists that were detected (if import strategy is not Minimum)",
+                                                         default=False,)
     enablePrimColor = BoolProperty(name="Prim Color",
                                   description="Enable blending with primitive color",
                                   default=False,) # this may be nice for strictly importing but exporting again will then not be exact
@@ -1683,7 +1887,9 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         global fpath
         fpath, fext = os.path.splitext(self.filepath)
         fpath, fname = os.path.split(fpath)
+        global importStrategy
         global vertexMode, enableMatrices
+        global detectedDisplayLists_use_transparency
         global useVertexAlpha
         global enablePrimColor, enableEnvColor, invertEnvColor
         global importTextures, exportTextures
@@ -1691,9 +1897,11 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         global enableTexClampSharpOcarinaTags, enableTexMirrorSharpOcarinaTags
         global enableMatrices, enableToon
         global AnimtoPlay, MajorasAnims, ExternalAnimes
+        importStrategy = self.importStrategy
         vertexMode = self.vertexMode
         useVertexAlpha = self.useVertexAlpha
         enableMatrices = self.enableMatrices
+        detectedDisplayLists_use_transparency = self.detectedDisplayLists_use_transparency
         enablePrimColor = self.enablePrimColor
         enableEnvColor = self.enableEnvColor
         invertEnvColor = self.invertEnvColor
@@ -1785,6 +1993,8 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
 
     def draw(self, context):
         l = self.layout
+        l.prop(self, 'importStrategy', text='Strategy')
+        l.prop(self, 'detectedDisplayLists_use_transparency')
         l.prop(self, "vertexMode")
         l.prop(self, "loadOtherSegments")
         l.prop(self, "originalObjectScale")
