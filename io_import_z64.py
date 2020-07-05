@@ -44,10 +44,11 @@ def getLogger(name):
     return log
 
 def registerLogging(level=logging.INFO):
-    global root_logger, root_logger_formatter, root_logger_stream_handler, root_logger_file_handler
+    global root_logger, root_logger_formatter, root_logger_stream_handler, root_logger_file_handler, root_logger_operator_report_handler
     root_logger = logging.getLogger('z64import')
     root_logger_stream_handler = logging.StreamHandler()
     root_logger_file_handler = None
+    root_logger_operator_report_handler = None
     root_logger_formatter = logging.Formatter('%(levelname)s:%(name)s: %(message)s')
     root_logger_stream_handler.setFormatter(root_logger_formatter)
     root_logger.addHandler(root_logger_stream_handler)
@@ -70,9 +71,45 @@ def setLogFile(path):
         root_logger.addHandler(root_logger_file_handler)
         root_logger_file_handler.setLevel(1)
 
+class OperatorReportLogHandler(logging.Handler):
+    def __init__(self, operator):
+        super().__init__()
+        self.operator = operator
+
+    def flush(self):
+        pass
+
+    def emit(self, record):
+        try:
+            type = 'DEBUG'
+            for levelType,  minLevel in (
+                ('ERROR',   logging.WARNING),
+                ('WARNING', logging.INFO),
+                ('INFO',    logging.DEBUG)
+            ):
+                if record.levelno > minLevel:
+                    type = levelType
+                    break
+            msg = self.format(record)
+            self.operator.report({type}, msg)
+        except Exception:
+            self.handleError(record)
+
+def setLogOperator(operator, level=logging.INFO):
+    global root_logger, root_logger_formatter, root_logger_operator_report_handler
+    if root_logger_operator_report_handler:
+        root_logger.removeHandler(root_logger_operator_report_handler)
+        root_logger_operator_report_handler = None
+    if operator:
+        root_logger_operator_report_handler = OperatorReportLogHandler(operator)
+        root_logger_operator_report_handler.setFormatter(root_logger_formatter)
+        root_logger_operator_report_handler.setLevel(logging.WARNING)
+        root_logger.addHandler(root_logger_operator_report_handler)
+
 def unregisterLogging():
     global root_logger, root_logger_stream_handler
     setLogFile(None)
+    setLogOperator(None)
     root_logger.removeHandler(root_logger_stream_handler)
 #
 
@@ -1891,9 +1928,16 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
     logging_level = IntProperty(name="Log level",
                              description="(logs in the system console) The lower, the more logs. trace=%d debug=%d info=%d" % (logging_trace_level,logging.DEBUG,logging.INFO),
                              default=logging.INFO, min=1, max=51)
-    logging_logfile = BoolProperty(name="Log to file",
-                             description="Log everything to a file",
+    report_logging_level = IntProperty(name='Report level',
+                             description='What logs to report to Blender. When the import is done, warnings and errors are shown, if any. trace=%d debug=%d info=%d' % (logging_trace_level,logging.DEBUG,logging.INFO),
+                             default=logging.INFO, min=1, max=51)
+    logging_logfile_enable = BoolProperty(name='Log to file',
+                             description='Log everything (all levels) to a file',
                              default=False,)
+    logging_logfile_path = StringProperty(name='Log file path',
+                             #subtype='FILE_PATH', # cannot use two FILE_PATH at the same time
+                             description='File to write logs to\nPath can be relative (to imported file) or absolute',
+                             default='log_io_import_z64.txt',)
 
     def execute(self, context):
         global fpath
@@ -1938,14 +1982,27 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         else:
             scaleFactor = 1 / self.originalObjectScale
         setLoggingLevel(self.logging_level)
-        #setLoggingLevel(logging.DEBUG)
         log = getLogger('ImportZ64.execute')
-        if self.logging_logfile:
-            logfile_path = os.path.abspath('log_io_import_z64.txt')
+        if self.logging_logfile_enable:
+            logfile_path = self.logging_logfile_path
+            if not os.path.isabs(logfile_path):
+                logfile_path = '%s/%s' % (fpath, logfile_path)
             log.info('Writing logs to %s' % logfile_path)
             setLogFile(logfile_path)
-        log.info("Importing '%s'..." % fname)
-        time_start = time.time()
+        setLogOperator(self, self.report_logging_level)
+        try:
+            log.info("Importing '%s'..." % fname)
+            time_start = time.time()
+            self.run_import(fpath, fname, fext)
+            log.info("SUCCESS:  Elapsed time %.4f sec" % (time.time() - time_start))
+            bpy.context.scene.update()
+        finally:
+            setLogFile(None)
+            setLogOperator(None)
+        return {'FINISHED'}
+
+    def run_import(self, fpath, fname, fext):
+        log = getLogger('ImportZ64.run_import')
         f3dzex = F3DZEX()
         f3dzex.loaddisplaylists(os.path.join(fpath, "displaylists.txt"))
         if self.loadOtherSegments:
@@ -1979,6 +2036,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                     f3dzex.loadSegment(i, segment_data_file)
                 else:
                     log.debug('No file found to load segment 0x%02X from', i)
+
         if fext.lower() == '.zmap':
             log.debug('Importing map')
             f3dzex.loadSegment(0x03, self.filepath)
@@ -1998,10 +2056,6 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                         area.spaces.active.grid_subdivisions = 10
                         area.spaces.active.clip_end = 900000
         #
-
-        log.info("SUCCESS:  Elapsed time %.4f sec" % (time.time() - time_start))
-        bpy.context.scene.update()
-        return {'FINISHED'}
 
     def draw(self, context):
         l = self.layout
@@ -2037,7 +2091,9 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         l.prop(self, "setView3dParameters")
         l.separator()
         l.prop(self, "logging_level")
-        l.prop(self, "logging_logfile")
+        l.prop(self, 'logging_logfile_enable')
+        if self.logging_logfile_enable:
+            l.prop(self, 'logging_logfile_path')
 
 def menu_func_import(self, context):
     self.layout.operator(ImportZ64.bl_idname, text="Zelda64 (.zobj;.zmap)")
