@@ -1875,7 +1875,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                                  description="Use 0xDA G_MTX and 0xD8 G_POPMTX commands",
                                  default=True,)
     detectedDisplayLists_use_transparency = BoolProperty(name="Default to transparency",
-                                                         description="Set material to use transparency or not for display lists that were detected (if import strategy is not Minimum)",
+                                                         description='Set material to use transparency or not for display lists that were detected',
                                                          default=False,)
     enablePrimColor = BoolProperty(name="Prim Color",
                                   description="Enable blending with primitive color",
@@ -2060,7 +2060,8 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
     def draw(self, context):
         l = self.layout
         l.prop(self, 'importStrategy', text='Strategy')
-        l.prop(self, 'detectedDisplayLists_use_transparency')
+        if self.importStrategy != 'NO_DETECTION':
+            l.prop(self, 'detectedDisplayLists_use_transparency')
         l.prop(self, "vertexMode")
         l.prop(self, "loadOtherSegments")
         l.prop(self, "originalObjectScale")
