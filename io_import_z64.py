@@ -139,6 +139,25 @@ class Tile:
         # todo texture files are written several times, at each usage
         log = getLogger('Tile.create')
         fmtName = self.getFormatName()
+        #Noka here
+        extrastring = ""
+        w = self.rWidth
+        if int(self.clip.x) & 1 != 0:
+            if replicateTexMirrorBlender:
+                w <<= 1
+            if enableTexMirrorSharpOcarinaTags:
+                extrastring += "#MirrorX"
+        h = self.rHeight
+        if int(self.clip.y) & 1 != 0:
+            if replicateTexMirrorBlender:
+                h <<= 1
+            if enableTexMirrorSharpOcarinaTags:
+                extrastring += "#MirrorY"
+        if int(self.clip.x) & 2 != 0 and enableTexClampSharpOcarinaTags:
+            extrastring += "#ClampX"
+        if int(self.clip.y) & 2 != 0 and enableTexClampSharpOcarinaTags:
+            extrastring += "#ClampY"
+        self.current_texture_file_path = '%s/textures/%s_%08X%s.tga' % (fpath, fmtName, self.data, extrastring)
         if exportTextures: # fixme exportTextures == False breaks the script
             try:
                 os.mkdir(fpath + "/textures")
@@ -147,28 +166,10 @@ class Tile:
             except:
                 log.exception('Could not create textures directory %s' % (fpath + "/textures"))
                 pass
-            #Noka here
-            extrastring = ""
-            w = self.rWidth
-            if int(self.clip.x) & 1 != 0:
-                if replicateTexMirrorBlender:
-                    w <<= 1
-                if enableTexMirrorSharpOcarinaTags:
-                    extrastring += "#MirrorX"
-            h = self.rHeight
-            if int(self.clip.y) & 1 != 0:
-                if replicateTexMirrorBlender:
-                    h <<= 1
-                if enableTexMirrorSharpOcarinaTags:
-                    extrastring += "#MirrorY"
-            if int(self.clip.x) & 2 != 0 and enableTexClampSharpOcarinaTags:
-                extrastring += "#ClampX"
-            if int(self.clip.y) & 2 != 0 and enableTexClampSharpOcarinaTags:
-                extrastring += "#ClampY"
-            self.current_texture_file_path = fpath + ('/textures/%s_%08X' % (fmtName, self.data)) + str(extrastring) + '.tga'
             if not os.path.isfile(self.current_texture_file_path):
                 log.debug('Writing texture %s (format 0x%02X)' % (self.current_texture_file_path, self.texFmt))
                 file = open(self.current_texture_file_path, 'wb')
+                self.write_error_encountered = False
                 if self.texFmt == 2:
                     if self.texSiz not in (0, 1):
                         log.error('Unknown texture format %d with pixel size %d', self.texFmt, self.texSiz)
@@ -208,10 +209,19 @@ class Tile:
                 else:
                     self.writeImageData(file, segment)
                 file.close()
+                if self.write_error_encountered:
+                    oldName = self.current_texture_file_path
+                    oldNameDir, oldNameBase = os.path.split(oldName)
+                    newName = '%s/fallback_%s' % (oldNameDir, oldNameBase)
+                    log.warning('Moving failed texture file import from %s to %s', oldName, newName)
+                    if os.path.isfile(newName):
+                        os.remove(newName)
+                    os.rename(oldName, newName)
+                    self.current_texture_file_path = newName
         try:
             tex_name = 'tex_%s_%08X' % (fmtName,self.data)
             tex = bpy.data.textures.new(name=tex_name, type='IMAGE')
-            img = load_image(fpath + ('/textures/%s_%08X' % (fmtName, self.data)) + str(extrastring) + '.tga')
+            img = load_image(self.current_texture_file_path)
             if img:
                 tex.image = img
                 if int(self.clip.x) & 2 != 0 and enableTexClampBlender:
@@ -356,6 +366,7 @@ class Tile:
             log.error('Segment offsets 0x%X-0x%X are invalid, writing black palette to %s (has the segment data been loaded?)' % (self.palette, self.palette + palSize * 2 - 1, self.current_texture_file_path))
             for i in range(palSize):
                 file.write(pack("L", 0))
+            self.write_error_encountered = True
             return
         seg, offset = splitOffset(self.palette)
         for i in range(palSize):
@@ -402,6 +413,7 @@ class Tile:
                     file.write(pack("B", 0))
                 else:
                     file.write(pack(">L", 0x000000FF))
+            self.write_error_encountered = True
             return
         seg, offset = splitOffset(self.data)
         for i in range(dir[0], dir[1], dir[2]):
