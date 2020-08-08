@@ -489,7 +489,7 @@ class Tile:
                     elif self.texSiz == 1: # IA8
                         r = g = b = (color >> 4) * 255 // 15
                         a = (color & 0xF) * 255 // 15
-                    elif self.texSiz == 1: # IA16
+                    elif self.texSiz == 2: # IA16
                         r = g = b = color >> 8
                         a = color & 0xFF
                 elif self.texFmt == 4: # I
