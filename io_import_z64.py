@@ -2081,6 +2081,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         if self.importStrategy != 'NO_DETECTION':
             l.prop(self, 'detectedDisplayLists_use_transparency')
         l.prop(self, "vertexMode")
+        l.prop(self, "useVertexAlpha")
         l.prop(self, "loadOtherSegments")
         l.prop(self, "originalObjectScale")
         box = l.box()
