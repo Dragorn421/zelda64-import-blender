@@ -101,7 +101,7 @@ class OperatorReportLogHandler(logging.Handler):
         try:
             type = 'DEBUG'
             for levelType,  minLevel in (
-                ('ERROR',   logging.WARNING),
+                ('ERROR',   logging.WARNING), # comment to allow calling bpy.ops.file.zobj2020 without RuntimeError (makes WARNING the highest report level instead of ERROR)
                 ('WARNING', logging.INFO),
                 ('INFO',    logging.DEBUG)
             ):
@@ -121,7 +121,7 @@ def setLogOperator(operator, level=logging.INFO):
     if operator:
         root_logger_operator_report_handler = OperatorReportLogHandler(operator)
         root_logger_operator_report_handler.setFormatter(root_logger_formatter)
-        root_logger_operator_report_handler.setLevel(logging.WARNING)
+        root_logger_operator_report_handler.setLevel(level)
         root_logger.addHandler(root_logger_operator_report_handler)
 
 def unregisterLogging():
@@ -212,7 +212,7 @@ class Tile:
             extrastring += "#ClampX"
         if int(self.clip.y) & 2 != 0 and enableTexClampSharpOcarinaTags:
             extrastring += "#ClampY"
-        self.current_texture_file_path = '%s/textures/%s_%08X%s.tga' % (fpath, fmtName, self.data, extrastring)
+        self.current_texture_file_path = '%s/textures/%s_%08X%s%s.tga' % (fpath, fmtName, self.data, ('_pal%08X' % self.palette) if self.texFmt == 2 else '', extrastring)
         if exportTextures: # fixme exportTextures == False breaks the script
             try:
                 os.mkdir(fpath + "/textures")
@@ -792,8 +792,10 @@ class F3DZEX:
             self.vbuf.append(Vertex())
         for i in range(2):
             self.tile.append(Tile())
-            self.vbuf.append(Vertex())
+            pass#self.vbuf.append(Vertex())
         for i in range(14 + 32):
+            pass#self.vbuf.append(Vertex())
+        while len(self.vbuf) < 32:
             self.vbuf.append(Vertex())
         self.curTile = 0
         self.material = []
@@ -856,6 +858,10 @@ class F3DZEX:
         self.offsetAnims = []
         self.durationAnims = []
         for i in range(0, len(data), 4):
+            # detect animation header
+            # ffff0000 rrrrrrrr iiiiiiii llll0000
+            # fixme data[i] == 0 but should be first byte of ffff
+            # fixme data[i+1] > 1 but why not 1 (or 0)
             if ((data[i] == 0) and (data[i+1] > 1) and
                  (data[i+2] == 0) and (data[i+3] == 0) and
                  (data[i+4] == 0x06) and
@@ -867,6 +873,7 @@ class F3DZEX:
                 self.animation.append(i)
                 self.offsetAnims.append(i)
                 self.offsetAnims[self.animTotal] = (0x06 << 24) | i
+                # fixme it's two bytes, not one
                 self.durationAnims.append(data[i+1] & 0x00FFFFFF)
                 self.animTotal += 1
         if(self.animTotal > 0):
@@ -1023,10 +1030,8 @@ class F3DZEX:
         log.info("Locating hierarchies...")
         self.locateHierarchies()
 
-        if len(self.hierarchy) == 0:
-            log.info("Found zilch. Using display lists, then...")
-            if len(self.displaylists) == 0:
-                log.info("...but none were found...")
+        if len(self.displaylists) != 0:
+            log.info('Importing display lists defined in displaylists.txt')
             for offsetStr in self.displaylists:
                 while offsetStr and offsetStr[-1] in ('\r','\n'):
                     offsetStr = offsetStr[:-1]
@@ -1042,6 +1047,7 @@ class F3DZEX:
                 if (offset & 0xFF000000) == 0:
                     log.info('Defaulting segment for offset 0x%X to 6', offset)
                     offset |= 0x06000000
+                log.info('Importing display list 0x%08X (from displaylists.txt)', offset)
                 self.buildDisplayList(None, 0, offset)
 
         for hierarchy in self.hierarchy:
@@ -1083,7 +1089,7 @@ class F3DZEX:
                     log.info('Building animations using armature %s in %s', armature.data.name, armature.name)
                     for i in range(len(self.animation)):
                         AnimtoPlay = i + 1
-                        log.info("   Loading animation %d/%d", AnimtoPlay, len(self.animation))
+                        log.info("   Loading animation %d/%d 0x%08X", AnimtoPlay, len(self.animation), self.offsetAnims[AnimtoPlay-1])
                         action = bpy.data.actions.new('anim%d_%d' % (AnimtoPlay, self.durationAnims[i]))
                         # not sure what users an action is supposed to have, or what it should be linked to
                         action.use_fake_user = True
@@ -1113,7 +1119,9 @@ class F3DZEX:
         log.info(
             'Searching for %s display lists in segment 0x%02X (materials with transparency: %s)',
             'non-read' if skipAlreadyRead else 'any', segment, 'yes' if self.use_transparency else 'no')
+        log.warning('If the imported geometry is weird/wrong, consider using displaylists.txt to manually define the display lists to import!')
         validOpcodesStartIndex = 0
+        validOpcodesSkipped = set()
         for i in range(0, len(data), 8):
             opcode = data[i]
             # valid commands are 0x00-0x07 and 0xD3-0xFF
@@ -1124,6 +1132,11 @@ class F3DZEX:
             # 0xEB, 0xEE, 0xEF, 0xF1 ("unimplemented -> rarely used" being the reasoning)
             # but filtering out those hurts the resulting import
             isValid = (opcode <= 0x07 or opcode >= 0xD3) #and opcode not in (0x07,0xEC,0xE4,0xF6,0xEB,0xEE,0xEF,0xF1)
+            if isValid and detectedDisplayLists_consider_unimplemented_invalid:
+                
+                isValid = opcode not in (0x07,0xE5,0xEC,0xD3,0xDB,0xDC,0xDD,0xE0,0xE5,0xE9,0xF6,0xF8)
+                if not isValid:
+                    validOpcodesSkipped.add(opcode)
             if not isValid:
                 validOpcodesStartIndex = None
             elif validOpcodesStartIndex is None:
@@ -1139,6 +1152,8 @@ class F3DZEX:
                     extraLenient = True
                 )
                 validOpcodesStartIndex = None
+        if validOpcodesSkipped:
+            log.info('Valid opcodes %s considered invalid because unimplemented (meaning rare)', ','.join('0x%02X' % opcode for opcode in sorted(validOpcodesSkipped)))
 
     def resetCombiner(self):
         self.primColor = Vector([1.0, 1.0, 1.0, 1.0])
@@ -1227,6 +1242,7 @@ class F3DZEX:
                         self.vbuf[index].normal.x = unpack_from("b", data, i + 4)[0] / 128
                         self.vbuf[index].normal.z = unpack_from("b", data, i + 5)[0] / 128
                         self.vbuf[index].normal.y = -unpack_from("b", data, i + 6)[0] / 128
+                        # wtf? BBBB pattern and [0]
                         self.vbuf[index].color = unpack_from("BBBB", data, i + 4)[0] / 255
                     elif data[i + 1] == 0x14:
                         self.vbuf[index].uv.x = float(unpack_from(">h", data, i + 4)[0])
@@ -1348,12 +1364,13 @@ class F3DZEX:
             # G_DL
             elif data[i] == 0xDE:
                 log.trace('G_DE at 0x%X %08X%08X', segmentMask | i, w0, w1)
-                mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
-                mesh.__init__()
-                offset = segmentMask | i
+                #mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
+                #mesh.__init__()
+                #offset = segmentMask | i
                 if validOffset(self.segment, w1):
                     buildRec(w1)
                 if data[i + 1] != 0x00:
+                    mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
                     self.alreadyRead[segment].append((startOffset,i))
                     return
             # G_ENDDL
@@ -1365,17 +1382,19 @@ class F3DZEX:
             # handle "LOD dlists"
             elif data[i] == 0xE1:
                 # 4 bytes starting at data[i+8+4] is a distance to check for displaying this dlist
-                mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
-                mesh.__init__()
-                offset = segmentMask | i
+                #mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
+                #mesh.__init__()
+                #offset = segmentMask | i
                 if validOffset(self.segment, w1):
                     buildRec(w1)
                 else:
                     log.warning('Invalid 0xE1 offset 0x%04X, skipping', w1)
+            # G_RDPPIPESYNC
             elif data[i] == 0xE7:
-                mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
-                mesh.__init__()
-                offset = segmentMask | i
+                #mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
+                #mesh.__init__()
+                #offset = segmentMask | i
+                pass
             elif data[i] == 0xF0:
                 self.palSize = ((w1 & 0x00FFF000) >> 13) + 1
             elif data[i] == 0xF2:
@@ -1442,9 +1461,9 @@ class F3DZEX:
             # G_GEOMETRYMODE
             elif data[i] == 0xD9:
                 # todo do not push mesh if geometry mode doesnt actually change?
-                mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
-                mesh.__init__()
-                offset = segmentMask | i
+                #mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
+                #mesh.__init__()
+                #offset = segmentMask | i
                 # https://wiki.cloudmodding.com/oot/F3DZEX#RSP_Geometry_Mode
                 # todo SharpOcarina tags
                 geometryModeMasks = {
@@ -1483,6 +1502,7 @@ class F3DZEX:
             else:
                 log.warning('Skipped (unimplemented) opcode 0x%02X' % data[i])
         log.warning('Reached end of dlist started at 0x%X', startOffset)
+        mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
         self.alreadyRead[segment].append((startOffset,endOffset))
 
     def LinkTpose(self, hierarchy):
@@ -1697,7 +1717,7 @@ class F3DZEX:
         frameTotal = unpack_from(">h", segment[AniSeg], (AnimationOffset))[0]
         rot_vals_addr = unpack_from(">L", segment[AniSeg], (AnimationOffset + 4))[0]
         RotIndexoffset = unpack_from(">L", segment[AniSeg], (AnimationOffset + 8))[0]
-        Limit = unpack_from(">h", segment[AniSeg], (AnimationOffset + 12))[0] # todo no idea what this is
+        Limit = unpack_from(">H", segment[AniSeg], (AnimationOffset + 12))[0] # todo no idea what this is
 
         rot_vals_addr  &= 0xFFFFFF
         RotIndexoffset &= 0xFFFFFF
@@ -1777,7 +1797,7 @@ class F3DZEX:
                 log.trace('Ignoring bone %d in animation %d, rotation table did not have the entry', bIndx, AnimtoPlay)
                 continue
 
-            RX /= 182.04444444444444444444
+            RX /= 182.04444444444444444444 # = 0x10000 / 360
             RY /= -182.04444444444444444444
             RZ /= 182.04444444444444444444
 
@@ -1785,7 +1805,7 @@ class F3DZEX:
             RYY = radians(RY)
             RZZ = radians(RZ)
 
-            log.trace("limb: %d XIdx: %d YIdx: %d ZIdx: %d frameTotal: %d", bIndx, rot_indexx, rot_indexy, rot_indexz, frameTotal)
+            log.trace("limb: %d XIdx: %d %d YIdx: %d %d ZIdx: %d %d frameTotal: %d", bIndx, rot_indexx, rot_indx, rot_indexy, rot_indy, rot_indexz, rot_indz, frameTotal)
             log.trace("limb: %d RX %d RZ %d RY %d anim: %d frame: %d frameTotal: %d", bIndx, int(RX), int(RZ), int(RY), currentanim+1, frameCurrent+1, frameTotal)
             if (bIndx > -1):
                 bone = armature.data.bones["limb_%02i" % (bIndx)]
@@ -1843,7 +1863,7 @@ class F3DZEX:
             RYY = radians(RY)
             RZZ = radians(RZ)
 
-            log.trace("limb: %d XIdx: %d YIdx: %d ZIdx: %d frameTotal: %d", i, rot_indexx, rot_indexy, rot_indexz, frameTotal)
+            log.trace("limb: %d XIdx: %d %d YIdx: %d %d ZIdx: %d %d frameTotal: %d", i, rot_indexx, rot_indx, rot_indexy, rot_indy, rot_indexz, rot_indz, frameTotal)
             log.trace("limb: %d RX %d RZ %d RY %d anim: %d frame: %d frameTotal: %d", bIndx, int(RX), int(RZ), int(RY), currentanim+1, frameCurrent+1, frameTotal)
             if (bIndx > -1):
                 bone = armature.data.bones["limb_%02i" % (bIndx)]
@@ -1895,6 +1915,11 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
     detectedDisplayLists_use_transparency = BoolProperty(name="Default to transparency",
                                                          description='Set material to use transparency or not for display lists that were detected',
                                                          default=False,)
+    detectedDisplayLists_consider_unimplemented_invalid = BoolProperty(
+                                    name='Unimplemented => Invalid',
+                                    description='Consider that unimplemented opcodes are invalid when detecting display lists.\n'
+                                                'The reasoning is that unimplemented opcodes are very rare or never actually used.',
+                                    default=True,)
     enablePrimColor = BoolProperty(name="Prim Color",
                                   description="Enable blending with primitive color",
                                   default=False,) # this may be nice for strictly importing but exporting again will then not be exact
@@ -1964,6 +1989,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         global importStrategy
         global vertexMode, enableMatrices
         global detectedDisplayLists_use_transparency
+        global detectedDisplayLists_consider_unimplemented_invalid
         global useVertexAlpha
         global enablePrimColor, enableEnvColor, invertEnvColor
         global importTextures, exportTextures
@@ -1976,6 +2002,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         useVertexAlpha = self.useVertexAlpha
         enableMatrices = self.enableMatrices
         detectedDisplayLists_use_transparency = self.detectedDisplayLists_use_transparency
+        detectedDisplayLists_consider_unimplemented_invalid = self.detectedDisplayLists_consider_unimplemented_invalid
         enablePrimColor = self.enablePrimColor
         enableEnvColor = self.enableEnvColor
         invertEnvColor = self.invertEnvColor
@@ -2080,8 +2107,9 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         l.prop(self, 'importStrategy', text='Strategy')
         if self.importStrategy != 'NO_DETECTION':
             l.prop(self, 'detectedDisplayLists_use_transparency')
+            l.prop(self, 'detectedDisplayLists_consider_unimplemented_invalid')
         l.prop(self, "vertexMode")
-        l.prop(self, "useVertexAlpha")
+        l.prop(self, 'useVertexAlpha')
         l.prop(self, "loadOtherSegments")
         l.prop(self, "originalObjectScale")
         box = l.box()
