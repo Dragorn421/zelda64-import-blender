@@ -828,7 +828,7 @@ class F3DZEX:
     def locateHierarchies(self):
         log = getLogger('F3DZEX.locateHierarchies')
         data = self.segment[0x06]
-        for i in range(0, len(data), 4):
+        for i in range(0, len(data)-11, 4):
             # test for header "bboooooo pp000000 xx000000": if segment bb=0x06 and offset oooooo 4-aligned and not zero parts (pp!=0)
             if data[i] == 0x06 and (data[i+3] & 3) == 0 and data[i+4] != 0:
                 offset = unpack_from(">L", data, i)[0] & 0x00FFFFFF
@@ -857,7 +857,7 @@ class F3DZEX:
         self.animation = []
         self.offsetAnims = []
         self.durationAnims = []
-        for i in range(0, len(data), 4):
+        for i in range(0, len(data)-15, 4):
             # detect animation header
             # ffff0000 rrrrrrrr iiiiiiii llll0000
             # fixme data[i] == 0 but should be first byte of ffff
@@ -884,7 +884,7 @@ class F3DZEX:
         data = self.segment[0x0F]
         self.animation = []
         self.offsetAnims = []
-        for i in range(0, len(data), 4):
+        for i in range(0, len(data)-15, 4):
             if ((data[i] == 0) and (data[i+1] > 1) and
                  (data[i+2] == 0) and (data[i+3] == 0) and
                  (data[i+4] == 0x06) and
