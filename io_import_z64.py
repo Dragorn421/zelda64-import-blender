@@ -2038,7 +2038,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                              default='AUTO',)
     useVertexAlpha = BoolProperty(name="Use vertex alpha",
                                  description="Only enable if your version of blender has native support",
-                                 default=(bpy.app.version == (2,79,7) and bpy.app.build_hash == b'10f724cec5e3'),)
+                                 default=(bpy.app.version == (2,79,7) and bpy.app.build_hash in {b'10f724cec5e3', b'e045fe53f1b0'}),)
     enableMatrices = BoolProperty(name="Matrices",
                                  description="Use 0xDA G_MTX and 0xD8 G_POPMTX commands",
                                  default=True,)
