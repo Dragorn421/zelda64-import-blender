@@ -2237,15 +2237,16 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
             f3dzex.loadSegment(0x06, self.filepath)
             f3dzex.importObj()
 
-        if importType == "ROOM" and self.setView3dParameters:
+        if self.setView3dParameters:
             for screen in bpy.data.screens:
                 for area in screen.areas:
                     if area.type == 'VIEW_3D':
-                        area.spaces.active.grid_lines = 500
-                        area.spaces.active.grid_scale = 10
-                        area.spaces.active.grid_subdivisions = 10
-                        area.spaces.active.clip_end = 900000
-        #
+                        if importType == "ROOM":
+                            area.spaces.active.grid_lines = 500
+                            area.spaces.active.grid_scale = 10
+                            area.spaces.active.grid_subdivisions = 10
+                            area.spaces.active.clip_end = 900000
+                        area.spaces.active.viewport_shade = "TEXTURED"
 
     def draw(self, context):
         l = self.layout
