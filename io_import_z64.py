@@ -2022,6 +2022,13 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
     loadOtherSegments = BoolProperty(name="Load Data From Other Segments",
                                     description="Load data from other segments",
                                     default=True,)
+    importType = EnumProperty(
+        name='Import type',
+        items=(('AUTO', 'Auto', 'Assume Room File if .zroom or .zmap, otherwise assume Object File'),
+               ('OBJECT', 'Object File', 'Assume the file being imported is an object file'),
+               ('ROOM', 'Room File', 'Assume the file being imported is a room file'),),
+        description='What to assume the file being imported is',
+        default='AUTO',)
     importStrategy = EnumProperty(name='Detect DLists',
                                  items=(('NO_DETECTION', 'Minimum', 'Maps: only use headers\nObjects: only use hierarchies\nOnly this option will not create unexpected geometry'),
                                         ('BRUTEFORCE', 'Bruteforce', 'Try to import everything that looks like a display list\n(ignores header for maps)'),
@@ -2149,11 +2156,20 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         global enableShadelessMaterials
         enableShadelessMaterials = self.enableShadelessMaterials
         global scaleFactor
-        if self.originalObjectScale == 0:
+
+        if self.importType == "AUTO":
             if fext.lower() in {'.zmap', '.zroom'}:
+                importType = "ROOM"
+            else:
+                importType = "OBJECT"
+        else:
+            importType = self.importType
+
+        if self.originalObjectScale == 0:
+            if importType == "ROOM":
                 scaleFactor = 1 # maps are actually stored 1:1
             else:
-                scaleFactor = 1 / 100
+                scaleFactor = 1 / 100 # most objects are stored 100:1
         else:
             scaleFactor = 1 / self.originalObjectScale
         setLoggingLevel(self.logging_level)
@@ -2168,7 +2184,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         try:
             log.info("Importing '%s'..." % fname)
             time_start = time.time()
-            self.run_import(fpath, fname, fext)
+            self.run_import(fpath, fname, importType)
             log.info("SUCCESS:  Elapsed time %.4f sec" % (time.time() - time_start))
             bpy.context.scene.update()
         finally:
@@ -2176,7 +2192,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
             setLogOperator(None)
         return {'FINISHED'}
 
-    def run_import(self, fpath, fname, fext):
+    def run_import(self, fpath, fname, importType):
         log = getLogger('ImportZ64.run_import')
         f3dzex = F3DZEX()
         f3dzex.loaddisplaylists(os.path.join(fpath, "displaylists.txt"))
@@ -2212,8 +2228,8 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                 else:
                     log.debug('No file found to load segment 0x%02X from', i)
 
-        if fext.lower() in {'.zmap', '.zroom'}:
-            log.debug('Importing map')
+        if importType == "ROOM":
+            log.debug('Importing room')
             f3dzex.loadSegment(0x03, self.filepath)
             f3dzex.importMap()
         else:
@@ -2221,8 +2237,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
             f3dzex.loadSegment(0x06, self.filepath)
             f3dzex.importObj()
 
-        #Noka here
-        if fext.lower() in {'.zmap', '.zroom'} and self.setView3dParameters:
+        if importType == "ROOM" and self.setView3dParameters:
             for screen in bpy.data.screens:
                 for area in screen.areas:
                     if area.type == 'VIEW_3D':
@@ -2234,6 +2249,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
 
     def draw(self, context):
         l = self.layout
+        l.prop(self, 'importType', text='Type')
         l.prop(self, 'importStrategy', text='Strategy')
         if self.importStrategy != 'NO_DETECTION':
             l.prop(self, 'detectedDisplayLists_use_transparency')
