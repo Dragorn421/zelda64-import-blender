@@ -1055,13 +1055,13 @@ class F3DZEX:
                 # mesh header offset 
                 mho = (data[i+5] << 16) | (data[i+6] << 8) | data[i+7]
                 if not mho < len(data):
-                    log.error('Mesh header offset 0x%X is past the zmap file size, skipping', mho)
+                    log.error('Mesh header offset 0x%X is past the room file size, skipping', mho)
                     continue
                 type = data[mho]
                 log.info("            Mesh Type: %d" % type)
                 if type == 0:
                     if mho + 12 > len(data):
-                        log.error('Mesh header at 0x%X of type %d extends past the zmap file size, skipping', mho, type)
+                        log.error('Mesh header at 0x%X of type %d extends past the room file size, skipping', mho, type)
                         continue
                     count = data[mho+1]
                     startSeg = data[mho+4]
@@ -1126,7 +1126,7 @@ class F3DZEX:
                         log.error('Unknown format %d for mesh type 1 in mesh header at 0x%X', format, mho)
                 elif type == 2:
                     if mho + 12 > len(data):
-                        log.error('Mesh header at 0x%X of type %d extends past the zmap file size, skipping', mho, type)
+                        log.error('Mesh header at 0x%X of type %d extends past the room file size, skipping', mho, type)
                         continue
                     count = data[mho+1]
                     startSeg = data[mho+4]
@@ -2018,7 +2018,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
     bl_label     = "Import Zelda64"
     bl_options   = {'PRESET', 'UNDO'}
     filename_ext = ".zobj"
-    filter_glob  = StringProperty(default="*.zobj;*.zmap", options={'HIDDEN'})
+    filter_glob  = StringProperty(default="*.zobj;*.zroom;*.zmap", options={'HIDDEN'})
     loadOtherSegments = BoolProperty(name="Load Data From Other Segments",
                                     description="Load data from other segments",
                                     default=True,)
@@ -2150,7 +2150,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         enableShadelessMaterials = self.enableShadelessMaterials
         global scaleFactor
         if self.originalObjectScale == 0:
-            if fext.lower() == '.zmap':
+            if fext.lower() in {'.zmap', '.zroom'}:
                 scaleFactor = 1 # maps are actually stored 1:1
             else:
                 scaleFactor = 1 / 100
@@ -2182,7 +2182,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         f3dzex.loaddisplaylists(os.path.join(fpath, "displaylists.txt"))
         if self.loadOtherSegments:
             log.debug('Loading other segments')
-            # for segment 2, use [zmap prefix]_scene.zscene then segment_02.zdata then fallback to any .zscene
+            # for segment 2, use [room file prefix]_scene.zscene then segment_02.zdata then fallback to any .zscene
             scene_file = None
             if "_room" in fname:
                 scene_file = fpath + "/" + fname[:fname.index("_room")] + "_scene.zscene"
@@ -2212,7 +2212,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                 else:
                     log.debug('No file found to load segment 0x%02X from', i)
 
-        if fext.lower() == '.zmap':
+        if fext.lower() in {'.zmap', '.zroom'}:
             log.debug('Importing map')
             f3dzex.loadSegment(0x03, self.filepath)
             f3dzex.importMap()
@@ -2222,7 +2222,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
             f3dzex.importObj()
 
         #Noka here
-        if fext.lower() == '.zmap' and self.setView3dParameters:
+        if fext.lower() in {'.zmap', '.zroom'} and self.setView3dParameters:
             for screen in bpy.data.screens:
                 for area in screen.areas:
                     if area.type == 'VIEW_3D':
@@ -2274,7 +2274,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
             l.prop(self, 'logging_logfile_path')
 
 def menu_func_import(self, context):
-    self.layout.operator(ImportZ64.bl_idname, text="Zelda64 (.zobj;.zmap)")
+    self.layout.operator(ImportZ64.bl_idname, text="Zelda64 (.zobj;.zroom;.zmap)")
 
 
 def register():
