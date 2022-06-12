@@ -190,7 +190,7 @@ class Tile:
             siz[self.texSiz] if self.texSiz < len(siz) else '_UnkSiz'
         )
 
-    def create(self, segment, use_transparency):
+    def create(self, segment, use_transparency, prefix=""):
         # todo texture files are written several times, at each usage
         log = getLogger('Tile.create')
         fmtName = self.getFormatName()
@@ -212,7 +212,11 @@ class Tile:
             extrastring += "#ClampX"
         if int(self.clip.y) & 2 != 0 and enableTexClampSharpOcarinaTags:
             extrastring += "#ClampY"
-        self.current_texture_file_path = '%s/textures/%s_%08X%s%s.tga' % (fpath, fmtName, self.data, ('_pal%08X' % self.palette) if self.texFmt == 2 else '', extrastring)
+        self.current_texture_file_path = (
+            '%s/textures/%s%s_%08X%s%s.tga'
+            % (fpath, prefix, fmtName, self.data,
+                ('_pal%08X' % self.palette) if self.texFmt == 2 else '',
+                extrastring))
         if exportTextures: # fixme exportTextures == False breaks the script
             try:
                 os.mkdir(fpath + "/textures")
@@ -267,14 +271,14 @@ class Tile:
                 if self.write_error_encountered:
                     oldName = self.current_texture_file_path
                     oldNameDir, oldNameBase = os.path.split(oldName)
-                    newName = '%s/fallback_%s' % (oldNameDir, oldNameBase)
+                    newName = oldNameDir + '/' + prefix + 'fallback_' + oldNameBase
                     log.warning('Moving failed texture file import from %s to %s', oldName, newName)
                     if os.path.isfile(newName):
                         os.remove(newName)
                     os.rename(oldName, newName)
                     self.current_texture_file_path = newName
         try:
-            tex_name = 'tex_%s_%08X' % (fmtName,self.data)
+            tex_name = prefix + ('tex_%s_%08X' % (fmtName,self.data))
             tex = bpy.data.textures.new(name=tex_name, type='IMAGE')
             img = load_image(self.current_texture_file_path)
             if img:
@@ -283,7 +287,7 @@ class Tile:
                     img.use_clamp_x = True
                 if int(self.clip.y) & 2 != 0 and enableTexClampBlender:
                     img.use_clamp_y = True
-            mtl_name = 'mtl_%08X' % self.data
+            mtl_name = prefix + ('mtl_%08X' % self.data)
             mtl = bpy.data.materials.new(name=mtl_name)
             if enableShadelessMaterials:
                 mtl.use_shadeless = True
@@ -586,7 +590,7 @@ class Mesh:
         # import normals
         self.normals = []
 
-    def create(self, name_format, hierarchy, offset, use_normals):
+    def create(self, name_format, hierarchy, offset, use_normals, prefix=""):
         log = getLogger('Mesh.create')
         if len(self.faces) == 0:
             log.trace('Skipping empty mesh %08X', offset)
@@ -595,9 +599,9 @@ class Mesh:
             return
         log.trace('Creating mesh %08X', offset)
 
-        me_name = name_format % ('me_%08X' % offset)
+        me_name = prefix + (name_format % ('me_%08X' % offset))
         me = bpy.data.meshes.new(me_name)
-        ob = bpy.data.objects.new(name_format % ('ob_%08X' % offset), me)
+        ob = bpy.data.objects.new(prefix + (name_format % ('ob_%08X' % offset)), me)
         bpy.context.scene.objects.link(ob)
         bpy.context.scene.objects.active = ob
         me.vertices.add(len(self.verts))
@@ -695,7 +699,7 @@ class Hierarchy:
         self.limb = []
         self.armature = None
 
-    def read(self, segment, offset):
+    def read(self, segment, offset, prefix=""):
         log = getLogger('Hierarchy.read')
         self.dlistCount = None
         if not validOffset(segment, offset + 5):
@@ -704,7 +708,7 @@ class Hierarchy:
         if not validOffset(segment, offset + 9):
             log.warning('Invalid segmented offset 0x%X for hierarchy (incomplete header), still trying to import ignoring dlistCount' % (offset + 9))
             self.dlistCount = 1
-        self.name = "sk_%08X" % offset
+        self.name = prefix + ("sk_%08X" % offset)
         self.offset = offset
         seg, offset = splitOffset(offset)
         limbIndex_offset = unpack_from(">L", segment[seg], offset)[0]
@@ -775,7 +779,9 @@ class Hierarchy:
 
 
 class F3DZEX:
-    def __init__(self):
+    def __init__(self, prefix=""):
+        self.prefix = prefix
+
         self.use_transparency = detectedDisplayLists_use_transparency
         self.alreadyRead = []
         self.segment, self.vbuf, self.tile  = [], [], []
@@ -846,7 +852,7 @@ class F3DZEX:
                             j |= 0x06000000
                             log.info("    hierarchy found at 0x%08X", j)
                             h = Hierarchy()
-                            if h.read(self.segment, j):
+                            if h.read(self.segment, j, prefix=self.prefix):
                                 self.hierarchy.append(h)
                             else:
                                 log.warning('Skipping hierarchy at 0x%08X', j)
@@ -1010,7 +1016,7 @@ class F3DZEX:
             f.write(jfifData)
         log.info('Copied jfif image to %s', jfifPath)
         jfifImage = load_image(jfifPath)
-        me = bpy.data.meshes.new(name_format % jfifDataStart)
+        me = bpy.data.meshes.new(self.prefix + (name_format % jfifDataStart))
         me.vertices.add(4)
         cos = (
             (background_width, 0),
@@ -1026,7 +1032,7 @@ class F3DZEX:
         bm.free()
         del bmesh
         me.uv_textures.new().data[0].image = jfifImage
-        ob = bpy.data.objects.new(name_format % jfifDataStart, me)
+        ob = bpy.data.objects.new(self.prefix + (name_format % jfifDataStart), me)
         ob.location.z = max(max(v.co.z for v in obj.data.vertices) for obj in bpy.context.scene.objects if obj.type == 'MESH')
         bpy.context.scene.objects.link(ob)
         return ob
@@ -1220,7 +1226,7 @@ class F3DZEX:
                     for i in range(len(self.animation)):
                         AnimtoPlay = i + 1
                         log.info("   Loading animation %d/%d 0x%08X", AnimtoPlay, len(self.animation), self.offsetAnims[AnimtoPlay-1])
-                        action = bpy.data.actions.new('anim%d_%d' % (AnimtoPlay, self.durationAnims[i]))
+                        action = bpy.data.actions.new(self.prefix + ('anim%d_%d' % (AnimtoPlay, self.durationAnims[i])))
                         # not sure what users an action is supposed to have, or what it should be linked to
                         action.use_fake_user = True
                         armature.animation_data.action = action
@@ -1388,7 +1394,7 @@ class F3DZEX:
                             material = self.material[j]
                             break
                     if material == None:
-                        material = self.tile[0].create(self.segment, self.use_transparency)
+                        material = self.tile[0].create(self.segment, self.use_transparency, prefix=self.prefix)
                         if material:
                             self.material.append(material)
                     has_tex = False
@@ -1500,13 +1506,13 @@ class F3DZEX:
                 if validOffset(self.segment, w1):
                     buildRec(w1)
                 if data[i + 1] != 0x00:
-                    mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
+                    mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals(), prefix=self.prefix)
                     self.alreadyRead[segment].append((startOffset,i))
                     return
             # G_ENDDL
             elif data[i] == 0xDF:
                 log.trace('G_ENDDL at 0x%X %08X%08X', segmentMask | i, w0, w1)
-                mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
+                mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals(), prefix=self.prefix)
                 self.alreadyRead[segment].append((startOffset,i))
                 return
             # handle "LOD dlists"
@@ -1632,7 +1638,7 @@ class F3DZEX:
             else:
                 log.warning('Skipped (unimplemented) opcode 0x%02X' % data[i])
         log.warning('Reached end of dlist started at 0x%X', startOffset)
-        mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals())
+        mesh.create(mesh_name_format, hierarchy, offset, self.checkUseNormals(), prefix=self.prefix)
         self.alreadyRead[segment].append((startOffset,endOffset))
 
     def LinkTpose(self, hierarchy):
@@ -2019,6 +2025,12 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
     bl_options   = {'PRESET', 'UNDO'}
     filename_ext = ".zobj"
     filter_glob  = StringProperty(default="*.zobj;*.zroom;*.zmap", options={'HIDDEN'})
+
+    files = CollectionProperty(
+        name="Files",
+        type=bpy.types.OperatorFileListElement,)
+    directory = StringProperty(subtype='DIR_PATH')
+
     loadOtherSegments = BoolProperty(name="Load Data From Other Segments",
                                     description="Load data from other segments",
                                     default=True,)
@@ -2102,6 +2114,9 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
     ExternalAnimes = BoolProperty(name="ExternalAnimes",
                              description="Load External Animes.",
                              default=False,)
+    prefixMultiImport = BoolProperty(name='Prefix multi-import',
+                             description='Add a prefix to imported data (objects, materials, images...) when importing several files at once',
+                             default=True,)
     setView3dParameters = BoolProperty(name="Set 3D View parameters",
                              description="For maps, use a more appropriate grid size and clip distance",
                              default=True,)
@@ -2120,9 +2135,6 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                              default='log_io_import_z64.txt',)
 
     def execute(self, context):
-        global fpath
-        fpath, fext = os.path.splitext(self.filepath)
-        fpath, fname = os.path.split(fpath)
         global importStrategy
         global vertexMode, enableMatrices
         global detectedDisplayLists_use_transparency
@@ -2155,7 +2167,37 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         ExternalAnimes = self.ExternalAnimes
         global enableShadelessMaterials
         enableShadelessMaterials = self.enableShadelessMaterials
+
+        setLoggingLevel(self.logging_level)
+        log = getLogger('ImportZ64.execute')
+        if self.logging_logfile_enable:
+            logfile_path = self.logging_logfile_path
+            if not os.path.isabs(logfile_path):
+                logfile_path = os.path.join(self.directory, logfile_path)
+            log.info('Writing logs to %s' % logfile_path)
+            setLogFile(logfile_path)
+        setLogOperator(self, self.report_logging_level)
+
+        try:
+            for file in self.files:
+                filepath = os.path.join(self.directory, file.name)
+                if len(self.files) == 1 or not self.prefixMultiImport:
+                    prefix = ""
+                else:
+                    prefix = file.name + "_"
+                self.executeSingle(filepath, prefix=prefix)
+            bpy.context.scene.update()
+        finally:
+            setLogFile(None)
+            setLogOperator(None)
+        return {'FINISHED'}
+
+    def executeSingle(self, filepath, prefix=""):
+        global fpath
         global scaleFactor
+
+        fpath, fext = os.path.splitext(filepath)
+        fpath, fname = os.path.split(fpath)
 
         if self.importType == "AUTO":
             if fext.lower() in {'.zmap', '.zroom'}:
@@ -2172,36 +2214,29 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
                 scaleFactor = 1 / 100 # most objects are stored 100:1
         else:
             scaleFactor = 1 / self.originalObjectScale
-        setLoggingLevel(self.logging_level)
-        log = getLogger('ImportZ64.execute')
-        if self.logging_logfile_enable:
-            logfile_path = self.logging_logfile_path
-            if not os.path.isabs(logfile_path):
-                logfile_path = '%s/%s' % (fpath, logfile_path)
-            log.info('Writing logs to %s' % logfile_path)
-            setLogFile(logfile_path)
-        setLogOperator(self, self.report_logging_level)
-        try:
-            log.info("Importing '%s'..." % fname)
-            time_start = time.time()
-            self.run_import(fpath, fname, importType)
-            log.info("SUCCESS:  Elapsed time %.4f sec" % (time.time() - time_start))
-            bpy.context.scene.update()
-        finally:
-            setLogFile(None)
-            setLogOperator(None)
-        return {'FINISHED'}
 
-    def run_import(self, fpath, fname, importType):
+        log = getLogger('ImportZ64.executeSingle')
+
+        log.info("Importing '%s'..." % fname)
+        time_start = time.time()
+        self.run_import(filepath, importType, prefix=prefix)
+        log.info("SUCCESS:  Elapsed time %.4f sec" % (time.time() - time_start))
+
+    def run_import(self, filepath, importType, prefix=""):
+        fpath, fext = os.path.splitext(filepath)
+        fpath, fname = os.path.split(fpath)
+
         log = getLogger('ImportZ64.run_import')
-        f3dzex = F3DZEX()
+        f3dzex = F3DZEX(prefix=prefix)
         f3dzex.loaddisplaylists(os.path.join(fpath, "displaylists.txt"))
         if self.loadOtherSegments:
             log.debug('Loading other segments')
-            # for segment 2, use [room file prefix]_scene.zscene then segment_02.zdata then fallback to any .zscene
+            # for segment 2, use [room file prefix]_scene then [same].zscene then segment_02.zdata then fallback to any .zscene
             scene_file = None
             if "_room" in fname:
-                scene_file = fpath + "/" + fname[:fname.index("_room")] + "_scene.zscene"
+                scene_file = fpath + "/" + fname[:fname.index("_room")] + "_scene"
+                if not os.path.isfile(scene_file):
+                    scene_file += ".zscene"
             if not scene_file or not os.path.isfile(scene_file):
                 scene_file = fpath + "/segment_02.zdata"
             if not scene_file or not os.path.isfile(scene_file):
@@ -2230,11 +2265,11 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
 
         if importType == "ROOM":
             log.debug('Importing room')
-            f3dzex.loadSegment(0x03, self.filepath)
+            f3dzex.loadSegment(0x03, filepath)
             f3dzex.importMap()
         else:
             log.debug('Importing object')
-            f3dzex.loadSegment(0x06, self.filepath)
+            f3dzex.loadSegment(0x06, filepath)
             f3dzex.importObj()
 
         if self.setView3dParameters:
@@ -2283,6 +2318,7 @@ class ImportZ64(bpy.types.Operator, ImportHelper):
         l.prop(self, "loadAnimations")
         l.prop(self, "MajorasAnims")
         l.prop(self, "ExternalAnimes")
+        l.prop(self, "prefixMultiImport")
         l.prop(self, "setView3dParameters")
         l.separator()
         l.prop(self, "logging_level")
