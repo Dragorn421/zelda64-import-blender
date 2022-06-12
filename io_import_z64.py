@@ -18,7 +18,7 @@
 
 bl_info = {
     "name":        "Zelda64 Importer",
-    "version":     (2, 4),
+    "version":     (2, 5),
     "author":      "SoulofDeity",
     "blender":     (2, 6, 0),
     "location":    "File > Import-Export",
